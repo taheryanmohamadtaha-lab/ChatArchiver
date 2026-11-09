@@ -4,11 +4,12 @@ import math
 import os
 import pathlib
 import random
+import shutil
 import tempfile
 import threading
 import webbrowser
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
 import archiver
 
 SETTINGS = os.path.join(os.path.expanduser('~'), '.chatarchiver_settings.json')
@@ -40,8 +41,18 @@ THEMES = {
 }
 
 NAV = [('home', '⌂   خانه'), ('import', '⇩   ورود از Export'), ('manual', '✎   ورود دستی'),
-       ('archive', '☰   آرشیو'), ('export', '⇪   خروجی'), ('backup', '⟳   پشتیبان‌گیری'),
+       ('archive', '☰   آرشیو'), ('code', '‹›   کدها'), ('export', '⇪   خروجی'), ('backup', '⟳   پشتیبان‌گیری'),
        ('settings', '⚙   تنظیمات'), ('help', '?   راهنما')]
+
+TREE_HEADS = {'date': 'تاریخ', 'source': 'منبع', 'kind': 'نوع', 'title': 'عنوان'}
+KIND_FA = {'chat': 'چت', 'project': 'پروژه', 'file': 'فایل'}
+SORTS = {'جدیدترین': ('date', True), 'قدیمی‌ترین': ('date', False), 'عنوان (الف تا ی)': ('title', False),
+         'منبع': ('source', False), 'نوع': ('kind', False)}
+
+
+def human(n):
+    return '%.1f KB' % (n / 1024) if n >= 1024 else '%d B' % n
+
 
 HELP = """۱) ChatGPT: Settings ← Data controls ← Export data  (لینک دانلود به ایمیل می‌آید)
 ۲) Claude: Settings ← Privacy ← Export data  (لینک دانلود به ایمیل می‌آید)
@@ -82,7 +93,9 @@ class App(tk.Tk):
         self.anim = tk.BooleanVar(value=st.get('anim', True))
         self.src = tk.StringVar()
         self.busy, self.busy_pos, self.hw, self.parts = False, 0, 0, []
-        self.pages, self.nav, self.stat_labels = {}, {}, {}
+        self.pages, self.nav, self.stat_labels, self.tree_rows = {}, {}, {}, {}
+        self.sort_col, self.sort_rev = 'date', True
+        self.item_files, self.code_items = [], []
         self.cur = 'home'
         self.log_visible = False
         self.m_files, self.m_idx = [], 0
@@ -216,6 +229,8 @@ class App(tk.Tk):
             self.refresh_home()
         elif key == 'archive':
             self.refresh_archive()
+        elif key == 'code':
+            self.refresh_code()
 
     def nav_hover(self, key, on):
         if key != self.cur:
@@ -258,36 +273,51 @@ class App(tk.Tk):
         self.card_title(rec, 'اخیراً اضافه‌شده')
         self.recent = self.make_tree(rec, 7)
 
-    def make_tree(self, parent, height):
+    def make_tree(self, parent, height, sortable=False):
         fr = tk.Frame(parent)
         fr.pack(fill='both', expand=True, padx=10, pady=(0, 10))
-        tree = ttk.Treeview(fr, columns=('date', 'source', 'title'), displaycolumns=('date', 'source', 'title'),
-                            show='headings', height=height, selectmode='browse')
-        for c, txt, w in (('date', 'تاریخ', 100), ('source', 'منبع', 110), ('title', 'عنوان', 380)):
-            tree.heading(c, text=txt, anchor='e')
+        tree = ttk.Treeview(fr, columns=('date', 'source', 'kind', 'title'), show='headings', height=height,
+                            selectmode='extended' if sortable else 'browse')
+        for c, w in (('date', 100), ('source', 100), ('kind', 70), ('title', 360)):
+            kw = {'command': (lambda cc=c: self.sort_by(cc))} if sortable else {}
+            tree.heading(c, text=TREE_HEADS[c], anchor='e', **kw)
             tree.column(c, width=w, anchor='e', stretch=(c == 'title'))
         sb = ttk.Scrollbar(fr, orient='vertical', command=tree.yview)
         tree.configure(yscrollcommand=sb.set)
         sb.pack(side='left', fill='y')
         tree.pack(side='right', fill='both', expand=True)
         tree.bind('<Double-1>', lambda e, t=tree: self.open_selected(t))
+        self.tree_rows[tree] = []
         return tree
 
     def fill_tree(self, tree, rows):
         tree.delete(*tree.get_children())
-        for i, (src, title, date, rel) in enumerate(rows):
-            tree.insert('', 'end', iid='%d|%s' % (i, rel), values=(date, src, title))
+        self.tree_rows[tree] = rows
+        for i, r in enumerate(rows):
+            tree.insert('', 'end', iid=str(i),
+                        values=(r['date'], r['source'], KIND_FA.get(r['kind'], ''), r['title']))
+
+    def selected_rows(self, tree):
+        rows = self.tree_rows.get(tree, [])
+        return [rows[int(i)] for i in tree.selection() if int(i) < len(rows)]
 
     def open_selected(self, tree):
-        sel = tree.selection()
-        if sel:
-            rel = sel[0].split('|', 1)[1]
-            self.open_path(os.path.join(self.out.get(), rel))
+        rows = self.selected_rows(tree)
+        if rows:
+            self.open_item(rows[0])
+
+    def open_item(self, e):
+        self.open_path(os.path.join(self.out.get(), e['rel']))
+
+    def refresh_all(self):
+        self.refresh_home()
+        self.refresh_archive()
+        self.refresh_code()
 
     def refresh_home(self):
         rows = archiver.load_index(self.out.get())
-        n_g = sum(1 for r in rows if r[0] == 'ChatGPT')
-        n_c = sum(1 for r in rows if r[0] == 'Claude')
+        n_g = sum(1 for r in rows if r['source'] == 'ChatGPT')
+        n_c = sum(1 for r in rows if r['source'] == 'Claude')
         for k, v in (('total', len(rows)), ('ChatGPT', n_g), ('Claude', n_c), ('other', len(rows) - n_g - n_c)):
             self.stat_labels[k].config(text=str(v))
         self.fill_tree(self.recent, rows[:30])
@@ -307,9 +337,9 @@ class App(tk.Tk):
             except Exception:
                 days = 0
             msgs.append('آخرین پشتیبان: %s' % last.replace('T', ' ') + ('\nبیش از ۷ روز گذشته است؛ پشتیبان تازه بگیرید.' if days > 7 else ''))
-        msgs.append('اگر در «ورود دستی» عنوان را خالی بگذارید، خودکار از متن ساخته می‌شود.')
-        for m in msgs:
-            l = tk.Label(self.ins_host, text=m, anchor='e', justify='right', wraplength=230, padx=10, pady=8)
+        msgs.append('کدهای داخل چت‌ها جدا ذخیره می‌شوند؛ از صفحه‌ی «کدها» می‌توانید با یک کلیک کپی کنید.')
+        for msg in msgs:
+            l = tk.Label(self.ins_host, text=msg, anchor='e', justify='right', wraplength=230, padx=10, pady=8)
             l.role = 'insight'
             l.pack(fill='x', pady=3)
         self.walk(self.ins_host, self.colors())
@@ -433,8 +463,10 @@ class App(tk.Tk):
         txt = self.get_text()
         paras = len([x for x in txt.replace('\r', '').split('\n\n') if x.strip()])
         kind = 'چت' if self.m_kind.get() == 'chat' else 'پروژه'
-        self.sum_lbl.config(text='%s  |  منبع: %s  |  عنوان: %s\n%d پاراگراف، %d کاراکتر، %d فایل' % (
-            kind, self.m_source.get() or 'Manual', self.effective_title(), paras, len(txt), len(self.m_files)))
+        codes = len(archiver.extract_code(txt))
+        extra = ('\n%d قطعه کد جدا هم ذخیره می‌شود (صفحه‌ی «کدها»)' % codes) if codes else ''
+        self.sum_lbl.config(text='%s  |  منبع: %s  |  عنوان: %s\n%d پاراگراف، %d کاراکتر، %d فایل%s' % (
+            kind, self.m_source.get() or 'Manual', self.effective_title(), paras, len(txt), len(self.m_files), extra))
         self.prev_box.config(state='normal')
         self.prev_box.delete('1.0', 'end')
         self.prev_box.insert('1.0', txt[:1500] + ('\n…' if len(txt) > 1500 else ''))
@@ -456,20 +488,237 @@ class App(tk.Tk):
         self.q = tk.StringVar()
         bar = tk.Frame(p)
         bar.pack(fill='x', pady=(4, 6))
-        self.make_btn(bar, 'بازخوانی', self.refresh_archive, ghost=True).pack(side='left')
-        tk.Entry(bar, textvariable=self.q).pack(side='right', fill='x', expand=True, padx=(8, 0), ipady=5)
+        self.sort_box = ttk.Combobox(bar, values=list(SORTS), state='readonly', width=16, justify='center')
+        self.sort_box.set('جدیدترین')
+        self.sort_box.pack(side='left')
+        tk.Label(bar, text='مرتب‌سازی:').pack(side='left', padx=(6, 4))
+        self.src_box = ttk.Combobox(bar, values=['همه'], state='readonly', width=14, justify='center')
+        self.src_box.set('همه')
+        self.src_box.pack(side='left', padx=(10, 4))
+        tk.Label(bar, text='منبع:').pack(side='left')
+        tk.Entry(bar, textvariable=self.q).pack(side='right', fill='x', expand=True, padx=(0, 8), ipady=5)
         c = self.card(p)
         c.pack(fill='both', expand=True)
         self.arch_title = self.card_title(c, 'آرشیو')
-        self.arch_tree = self.make_tree(c, 16)
-        self.note(c, 'برای باز کردن هر مورد روی آن دوبار کلیک کنید.').pack_configure(pady=(0, 8))
+        self.arch_tree = self.make_tree(c, 8, sortable=True)
+        act = tk.Frame(c)
+        act.pack(fill='x', padx=14, pady=(0, 6))
+        self.make_btn(act, 'باز کردن', lambda: self.open_selected(self.arch_tree)).pack(side='right')
+        self.make_btn(act, 'تغییر نام', self.rename_item, ghost=True).pack(side='right', padx=6)
+        self.make_btn(act, 'حذف', self.delete_items, ghost=True).pack(side='right')
+        tk.Label(act, text='(حذف = انتقال به سطل آرشیو؛ قابل بازگشت)').pack(side='left')
+        act.winfo_children()[-1].role = 'muted'
+        t2 = tk.Label(c, text='فایل‌ها و کدهای مورد انتخاب‌شده', anchor='e', font=('Tahoma', 10, 'bold'))
+        t2.pack(fill='x', padx=14)
+        fr = tk.Frame(c)
+        fr.pack(fill='x', padx=14, pady=(2, 4))
+        self.ftree = ttk.Treeview(fr, columns=('size', 'group', 'name'), show='headings', height=3, selectmode='browse')
+        for col, txt, w in (('size', 'حجم', 80), ('group', 'نوع', 70), ('name', 'نام', 420)):
+            self.ftree.heading(col, text=txt, anchor='e')
+            self.ftree.column(col, width=w, anchor='e', stretch=(col == 'name'))
+        self.ftree.pack(fill='x')
+        self.ftree.bind('<Double-1>', lambda e: self.open_item_file())
+        fb = tk.Frame(c)
+        fb.pack(fill='x', padx=14, pady=(0, 10))
+        self.make_btn(fb, 'باز کردن فایل', self.open_item_file, ghost=True).pack(side='right')
+        self.make_btn(fb, 'حذف فایل', self.delete_item_file, ghost=True).pack(side='right', padx=6)
+        self.arch_tree.bind('<<TreeviewSelect>>', lambda e: self.refresh_item_files())
+        self.sort_box.bind('<<ComboboxSelected>>', self.on_sort_box)
+        self.src_box.bind('<<ComboboxSelected>>', lambda e: self.refresh_archive())
         self.q.trace_add('write', lambda *a: self.refresh_archive())
 
+    def on_sort_box(self, e=None):
+        self.sort_col, self.sort_rev = SORTS[self.sort_box.get()]
+        self.refresh_archive()
+
+    def sort_by(self, col):
+        if self.sort_col == col:
+            self.sort_rev = not self.sort_rev
+        else:
+            self.sort_col, self.sort_rev = col, (col == 'date')
+        self.sort_box.set('')
+        self.refresh_archive()
+
     def refresh_archive(self):
-        q = self.q.get().strip().lower()
-        rows = [r for r in archiver.load_index(self.out.get()) if not q or q in (r[1] + ' ' + r[0]).lower()]
+        out = self.out.get()
+        rows = archiver.load_index(out) + archiver.list_loose_files(out)
+        sources = ['همه'] + sorted({r['source'] for r in rows if r['source']})
+        self.src_box.config(values=sources)
+        if self.src_box.get() not in sources:
+            self.src_box.set('همه')
+        q, sf = self.q.get().strip().lower(), self.src_box.get()
+        rows = [r for r in rows if (sf == 'همه' or r['source'] == sf)
+                and (not q or q in (r['title'] + ' ' + r['source']).lower())]
+        col = self.sort_col
+        rows.sort(key=lambda r: str(r[col]).casefold(), reverse=self.sort_rev)
         self.fill_tree(self.arch_tree, rows)
+        for c, txt in TREE_HEADS.items():
+            self.arch_tree.heading(c, text=txt + ((' ▼' if self.sort_rev else ' ▲') if c == col else ''))
         self.arch_title.config(text='آرشیو (%d)' % len(rows))
+        self.refresh_item_files()
+
+    def refresh_item_files(self):
+        rows = self.selected_rows(self.arch_tree)
+        self.item_files = archiver.entry_files(self.out.get(), rows[0]) if len(rows) == 1 else []
+        self.ftree.delete(*self.ftree.get_children())
+        for i, f in enumerate(self.item_files):
+            self.ftree.insert('', 'end', iid=str(i), values=(human(f['size']), f['group'], f['name']))
+
+    def rename_item(self):
+        rows = self.selected_rows(self.arch_tree)
+        if len(rows) != 1:
+            messagebox.showinfo('توجه', 'برای تغییر نام، فقط یک مورد را انتخاب کنید.')
+            return
+        e = rows[0]
+        new = simpledialog.askstring('تغییر نام', 'نام جدید:', initialvalue=e['title'], parent=self)
+        if not new or new.strip() == e['title']:
+            return
+        try:
+            archiver.rename_entry(self.out.get(), e, new)
+            self.log('تغییر نام داده شد: %s ← %s' % (e['title'], new.strip()))
+            self.refresh_all()
+        except Exception as ex:
+            messagebox.showwarning('توجه', str(ex))
+
+    def delete_items(self):
+        rows = self.selected_rows(self.arch_tree)
+        if not rows:
+            messagebox.showinfo('توجه', 'اول یک یا چند مورد را انتخاب کنید.')
+            return
+        if not messagebox.askyesno('حذف', '%d مورد (همراه فایل‌های Markdown/HTML و کدهای جداشده‌شان) '
+                                          'به سطل آرشیو منتقل شود؟' % len(rows)):
+            return
+        for r in rows:
+            try:
+                archiver.delete_entry(self.out.get(), r)
+            except Exception as ex:
+                self.log('خطا در حذف %s: %s' % (r['title'], ex))
+        self.log('%d مورد به سطل منتقل شد.' % len(rows))
+        self.refresh_all()
+
+    def sel_item_file(self):
+        sel = self.ftree.selection()
+        return self.item_files[int(sel[0])] if sel else None
+
+    def open_item_file(self):
+        f = self.sel_item_file()
+        if f:
+            self.open_path(f['path'])
+
+    def delete_item_file(self):
+        f = self.sel_item_file()
+        if not f:
+            messagebox.showinfo('توجه', 'یک فایل را از فهرست پایین انتخاب کنید.')
+            return
+        if messagebox.askyesno('حذف فایل', 'فایل «%s» به سطل آرشیو منتقل شود؟' % f['name']):
+            archiver.delete_file(self.out.get(), f['path'])
+            self.log('فایل به سطل منتقل شد: ' + f['name'])
+            self.refresh_item_files()
+            self.refresh_code()
+
+    # کدها
+    def build_code(self, p):
+        self.cq = tk.StringVar()
+        bar = tk.Frame(p)
+        bar.pack(fill='x', pady=(4, 6))
+        self.make_btn(bar, 'بازخوانی', self.refresh_code, ghost=True).pack(side='left')
+        tk.Entry(bar, textvariable=self.cq).pack(side='right', fill='x', expand=True, padx=(0, 8), ipady=5)
+        c = self.card(p)
+        c.pack(fill='both', expand=True)
+        self.code_title = self.card_title(c, 'کدها')
+        self.note(c, 'کدهای داخل چت‌ها و پروژه‌ها (بلوک‌های ```) جدا از متن چت ذخیره می‌شوند. '
+                     'یک کد را انتخاب کنید و «کپی کد» را بزنید.')
+        body = tk.Frame(c)
+        body.pack(fill='both', expand=True, padx=10, pady=(6, 4))
+        left = tk.Frame(body)
+        left.pack(side='right', fill='y')
+        self.code_tree = ttk.Treeview(left, columns=('ext', 'name', 'title'), show='headings', height=14,
+                                      selectmode='browse')
+        for col, txt, w in (('ext', 'زبان', 50), ('name', 'فایل', 130), ('title', 'چت / پروژه', 190)):
+            self.code_tree.heading(col, text=txt, anchor='e')
+            self.code_tree.column(col, width=w, anchor='e', stretch=(col == 'title'))
+        sb = ttk.Scrollbar(left, orient='vertical', command=self.code_tree.yview)
+        self.code_tree.configure(yscrollcommand=sb.set)
+        sb.pack(side='left', fill='y')
+        self.code_tree.pack(side='right', fill='y')
+        right = tk.Frame(body)
+        right.pack(side='left', fill='both', expand=True, padx=(0, 8))
+        self.code_view = tk.Text(right, wrap='none', height=14, bd=0, relief='flat', font=('Consolas', 10))
+        xs = ttk.Scrollbar(right, orient='horizontal', command=self.code_view.xview)
+        ys = ttk.Scrollbar(right, orient='vertical', command=self.code_view.yview)
+        self.code_view.configure(xscrollcommand=xs.set, yscrollcommand=ys.set)
+        xs.pack(side='bottom', fill='x')
+        ys.pack(side='right', fill='y')
+        self.code_view.pack(side='left', fill='both', expand=True)
+        row = tk.Frame(c)
+        row.pack(fill='x', padx=14, pady=(2, 12))
+        self.copy_btn = self.make_btn(row, 'کپی کد', self.copy_code, big=True)
+        self.copy_btn.pack(side='right')
+        self.make_btn(row, 'ذخیره به‌عنوان...', self.save_code_as, ghost=True).pack(side='right', padx=8)
+        self.make_btn(row, 'باز کردن', self.open_code_file, ghost=True).pack(side='right')
+        self.make_btn(row, 'حذف', self.delete_code, ghost=True).pack(side='left')
+        self.code_tree.bind('<<TreeviewSelect>>', lambda e: self.show_code())
+        self.cq.trace_add('write', lambda *a: self.refresh_code())
+
+    def refresh_code(self):
+        q = self.cq.get().strip().lower()
+        items = [x for x in archiver.list_code(self.out.get())
+                 if not q or q in (x['title'] + ' ' + x['name'] + ' ' + x['ext']).lower()]
+        self.code_items = items
+        self.code_tree.delete(*self.code_tree.get_children())
+        for i, x in enumerate(items):
+            self.code_tree.insert('', 'end', iid=str(i), values=(x['ext'], x['name'], x['title']))
+        self.code_title.config(text='کدها (%d)' % len(items))
+        self.set_code_view('')
+
+    def set_code_view(self, text):
+        self.code_view.config(state='normal')
+        self.code_view.delete('1.0', 'end')
+        self.code_view.insert('1.0', text)
+        self.code_view.config(state='disabled')
+
+    def sel_code(self):
+        sel = self.code_tree.selection()
+        return self.code_items[int(sel[0])] if sel else None
+
+    def read_code(self, item):
+        with open(item['path'], 'r', encoding='utf-8', errors='replace') as f:
+            return f.read()
+
+    def show_code(self):
+        item = self.sel_code()
+        self.set_code_view(self.read_code(item)[:300000] if item else '')
+
+    def copy_code(self):
+        item = self.sel_code()
+        if not item:
+            messagebox.showinfo('توجه', 'اول یک کد را از فهرست انتخاب کنید.')
+            return
+        self.clipboard_clear()
+        self.clipboard_append(self.read_code(item))
+        self.update()
+        self.copy_btn.config(text='کپی شد ✓')
+        self.after(1400, lambda: self.copy_btn.config(text='کپی کد'))
+
+    def save_code_as(self):
+        item = self.sel_code()
+        if not item:
+            return
+        dest = filedialog.asksaveasfilename(initialfile=item['name'])
+        if dest:
+            shutil.copy2(item['path'], dest)
+            self.log('کد ذخیره شد: ' + dest)
+
+    def open_code_file(self):
+        item = self.sel_code()
+        if item:
+            self.open_path(item['path'])
+
+    def delete_code(self):
+        item = self.sel_code()
+        if item and messagebox.askyesno('حذف کد', 'فایل «%s» به سطل آرشیو منتقل شود؟' % item['name']):
+            archiver.delete_file(self.out.get(), item['path'])
+            self.refresh_code()
 
     # خروجی
     def build_export(self, p):
@@ -542,6 +791,21 @@ class App(tk.Tk):
         self.theme_box.bind('<<ComboboxSelected>>', lambda e: self.set_theme(self.theme_box.get()))
         tk.Label(r, text='تم:').pack(side='right')
         tk.Checkbutton(c, text='انیمیشن هدر', variable=self.anim, anchor='e').pack(fill='x', padx=14, pady=(0, 12))
+        c2 = self.card(p)
+        c2.pack(fill='x', pady=6)
+        self.card_title(c2, 'سطل آرشیو')
+        self.note(c2, 'موردهایی که حذف می‌کنید به پوشه‌ی .trash داخل آرشیو منتقل می‌شوند و تا وقتی سطل را خالی '
+                      'نکنید، قابل بازگرداندن‌اند (فایل‌ها را از آن پوشه به جای اولشان برگردانید).')
+        r2 = tk.Frame(c2)
+        r2.pack(fill='x', padx=14, pady=10)
+        self.make_btn(r2, 'خالی کردن سطل', self.do_empty_trash).pack(side='right')
+        self.make_btn(r2, 'باز کردن سطل', lambda: self.open_dir(os.path.join(self.out.get(), '.trash')),
+                      ghost=True).pack(side='right', padx=8)
+
+    def do_empty_trash(self):
+        if messagebox.askyesno('خالی کردن سطل', 'همه‌ی موردهای سطل برای همیشه پاک شوند؟'):
+            n = archiver.empty_trash(self.out.get())
+            self.log('سطل خالی شد (%d فایل).' % n)
 
     def toggle_daynight(self):
         self.set_theme('روز' if self.theme_name in NIGHT else 'شب')
@@ -799,7 +1063,7 @@ class App(tk.Tk):
         if p:
             self.out.set(p)
             self.save_settings()
-            self.refresh_home()
+            self.refresh_all()
 
     def pick_backup(self):
         p = filedialog.askdirectory()
