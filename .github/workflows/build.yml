@@ -1,4 +1,4 @@
-build.ymlname: Build Windows EXE
+name: Build Windows EXE
 on:
   push:
     branches: [main]
