@@ -328,7 +328,7 @@ def save_projects(projects, out):
 # ---------- ورود دستی ----------
 def add_manual(out, kind, title, source, text, files, log=print):
     """kind: 'chat' یا 'project'. text: متن چسبانده‌شده. files: لیست مسیر فایل‌ها."""
-    title = (title or '').strip() or 'بدون عنوان'
+    title = (title or '').strip() or auto_title(text)
     source = (source or '').strip() or 'Manual'
     now = datetime.datetime.now()
     base = os.path.join(out, 'Manual')
@@ -365,3 +365,55 @@ def add_manual(out, kind, title, source, text, files, log=print):
                     % (html.escape(title), CSS, html.escape(title), md_to_html(text or ''), links))
     write_index(out, [(source if kind == 'chat' else 'Project', title, fmt(now, '%Y-%m-%d'), page)])
     log('ذخیره شد: %s (%d فایل)' % (title, len(copied) if kind == 'chat' else len(files or [])))
+
+
+# ---------- ابزارهای رابط کاربری ----------
+def auto_title(text):
+    """عنوان خودکار: اولین خط معنادار متن، یا تاریخ و ساعت."""
+    for ln in str(text or '').splitlines():
+        t = re.sub(r'^[#>*\-\s•`|]+', '', ln.strip()).strip()
+        if t:
+            return t[:45].rstrip() + ('…' if len(t) > 45 else '')
+    return 'یادداشت ' + fmt(datetime.datetime.now())
+
+
+def preview_html(title, text):
+    return ('<!doctype html><html lang="fa"><meta charset="utf-8"><title>%s</title><style>%s</style>'
+            '<h2 dir="auto">%s</h2><div class="m assistant">%s</div>'
+            % (html.escape(title), CSS, html.escape(title), md_to_html(text or '')))
+
+
+def load_index(out):
+    """فهرست آرشیو: [(منبع, عنوان, تاریخ, مسیر نسبی)] جدیدترین اول."""
+    try:
+        rows = [tuple(e) for e in load_json(os.path.join(out, '.index.json'))]
+    except Exception:
+        rows = []
+    rows.sort(key=lambda e: e[2], reverse=True)
+    return rows
+
+
+def export_combined(out, dest):
+    """همه‌ی فایل‌های Markdown آرشیو را در یک فایل واحد جمع می‌کند."""
+    paths = []
+    for dp, dn, files in os.walk(out):
+        dn[:] = [d for d in dn if d not in ('Files', 'raw_json')]
+        paths += [os.path.join(dp, f) for f in files if f.lower().endswith('.md')]
+    paths.sort()
+    with open(dest, 'w', encoding='utf-8') as w:
+        for p in paths:
+            with open(p, 'r', encoding='utf-8') as r:
+                w.write(r.read().rstrip() + '\n\n---\n\n')
+    return len(paths)
+
+
+def backup_zip(out, dest_dir):
+    """نسخه‌ی پشتیبان کامل از آرشیو (ZIP با تاریخ و ساعت)."""
+    out_abs, dest_abs = os.path.abspath(out), os.path.abspath(dest_dir)
+    if dest_abs == out_abs or dest_abs.startswith(out_abs + os.sep):
+        raise ValueError('پوشه‌ی پشتیبان نباید داخل پوشه‌ی آرشیو باشد.')
+    if not os.path.isdir(out_abs):
+        raise ValueError('پوشه‌ی آرشیو هنوز ساخته نشده است.')
+    os.makedirs(dest_abs, exist_ok=True)
+    base = os.path.join(dest_abs, 'ChatArchive_backup_' + datetime.datetime.now().strftime('%Y-%m-%d_%H%M'))
+    return shutil.make_archive(base, 'zip', out_abs)
