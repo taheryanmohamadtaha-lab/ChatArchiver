@@ -47,6 +47,15 @@ def lerp(a, b, t):
     return '#%02x%02x%02x' % tuple(int(ca[i] + (cb[i] - ca[i]) * t) for i in range(3))
 
 
+def is_rtl_line(line):
+    for ch in line:
+        if '\u0590' <= ch <= '\u08ff' or '\ufb1d' <= ch <= '\ufdff' or '\ufe70' <= ch <= '\ufeff':
+            return True
+        if ch.isalpha():
+            return False
+    return False
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -115,6 +124,9 @@ class App(tk.Tk):
         tk.Label(t2, text='متن چت (یا توضیحات/دستورالعمل پروژه) را اینجا Paste کنید:', anchor='e').pack(fill='x', padx=10)
         self.text = scrolledtext.ScrolledText(t2, height=9, bd=0, relief='flat')
         self.text.pack(fill='both', expand=True, padx=10, pady=3)
+        self.text.tag_configure('rtl', justify='right')
+        self.text.bind('<KeyRelease>', lambda e: self.refresh_rtl())
+        self.text.bind('<<Paste>>', lambda e: self.after(80, self.refresh_rtl), add='+')
         f = tk.Frame(t2)
         f.pack(fill='x', padx=10, pady=3)
         self.make_btn(f, 'افزودن فایل‌ها...', self.pick_files).pack(side='right')
@@ -316,6 +328,16 @@ class App(tk.Tk):
 
         self.bind_all('<Button-3>', show)
 
+    def refresh_rtl(self):
+        t = self.text
+        t.tag_remove('rtl', '1.0', 'end')
+        n = int(t.index('end-1c').split('.')[0])
+        if n > 5000:
+            return
+        for i in range(1, n + 1):
+            if is_rtl_line(t.get('%d.0' % i, '%d.end' % i)):
+                t.tag_add('rtl', '%d.0' % i, '%d.end' % i)
+
     def paste_clip(self):
         try:
             data = self.clipboard_get()
@@ -324,6 +346,7 @@ class App(tk.Tk):
             return
         self.text.insert('insert', data)
         self.text.focus_set()
+        self.refresh_rtl()
 
     # ---------- عملیات ----------
     def pick_src(self):
@@ -382,7 +405,7 @@ class App(tk.Tk):
     def save_manual(self):
         try:
             archiver.add_manual(self.out.get(), self.kind.get(), self.title_var.get(),
-                                self.source_var.get(), self.text.get('1.0', 'end').strip(),
+                                self.source_var.get(), self.text.get('1.0', 'end-1c').strip('\n'),
                                 self.files, self.log)
             self.text.delete('1.0', 'end')
             self.title_var.set('')
