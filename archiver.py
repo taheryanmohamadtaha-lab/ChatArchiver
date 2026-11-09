@@ -85,10 +85,96 @@ def claude_messages(conv):
     return msgs
 
 
+# ---------- تبدیل متن به HTML با حفظ ساختار و راست‌به‌چپ ----------
+_W = r'[A-Za-z0-9](?:[A-Za-z0-9_\-./:@#=%\\]*[A-Za-z0-9])?[+#]*'
+LATIN = re.compile(r'<[^>]+>|&#?\w+;|(' + _W + r'(?: ' + _W + r')*)')
+BLOCK = re.compile(r'^\s*(```|#{1,6}\s|[-*•]\s|\d+[.)]\s|\||>)')
+
+
+def inline(s):
+    out = []
+    for p in re.split(r'(`[^`\n]+`)', s):
+        if len(p) > 2 and p.startswith('`') and p.endswith('`'):
+            out.append('<code>%s</code>' % html.escape(p[1:-1]))
+            continue
+        e = html.escape(p, quote=False)
+        e = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', e)
+        e = re.sub(r'(?<![*\w])\*(?!\s)(.+?)(?<!\s)\*(?![*\w])', r'<i>\1</i>', e)
+        e = re.sub(r'\[([^\]]+)\]\((https?://[^)\s]+)\)', r'<a href="\2">\1</a>', e)
+        e = LATIN.sub(lambda m: '<bdi dir="ltr">%s</bdi>' % m.group(1) if m.group(1) else m.group(0), e)
+        out.append(e)
+    return ''.join(out)
+
+
+def md_to_html(text):
+    lines = str(text).replace('\r\n', '\n').replace('\r', '\n').split('\n')
+    out, i = [], 0
+    while i < len(lines):
+        ln = lines[i]
+        st = ln.strip()
+        if st.startswith('```'):
+            i += 1
+            buf = []
+            while i < len(lines) and not lines[i].strip().startswith('```'):
+                buf.append(lines[i])
+                i += 1
+            i += 1
+            out.append('<pre dir="ltr"><code>%s</code></pre>' % html.escape('\n'.join(buf)))
+            continue
+        if not st:
+            i += 1
+            continue
+        m = re.match(r'^(#{1,6})\s+(.*)', st)
+        if m:
+            lv = min(len(m.group(1)) + 1, 6)
+            out.append('<h%d dir="auto">%s</h%d>' % (lv, inline(m.group(2)), lv))
+            i += 1
+            continue
+        if re.match(r'^\s*([-*•]|\d+[.)])\s+', ln):
+            ordered = bool(re.match(r'^\s*\d+[.)]\s+', ln))
+            pat = r'^\s*\d+[.)]\s+' if ordered else r'^\s*[-*•]\s+'
+            items = []
+            while i < len(lines) and re.match(pat, lines[i]):
+                items.append(re.sub(pat, '', lines[i]))
+                i += 1
+            tag = 'ol' if ordered else 'ul'
+            out.append('<%s dir="auto">%s</%s>' % (tag, ''.join('<li dir="auto">%s</li>' % inline(x) for x in items), tag))
+            continue
+        if st.startswith('|'):
+            rows = []
+            while i < len(lines) and lines[i].strip().startswith('|'):
+                cells = [c.strip() for c in lines[i].strip().strip('|').split('|')]
+                if not all(re.fullmatch(r':?-{2,}:?', c) for c in cells if c):
+                    rows.append(cells)
+                i += 1
+            out.append('<table>%s</table>' % ''.join(
+                '<tr>%s</tr>' % ''.join('<td dir="auto">%s</td>' % inline(c) for c in r) for r in rows))
+            continue
+        if st.startswith('>'):
+            buf = []
+            while i < len(lines) and lines[i].strip().startswith('>'):
+                buf.append(lines[i].strip().lstrip('>').strip())
+                i += 1
+            out.append('<blockquote dir="auto">%s</blockquote>' % '<br>'.join(inline(x) for x in buf))
+            continue
+        buf = [ln.strip()]
+        i += 1
+        while i < len(lines) and lines[i].strip() and not BLOCK.match(lines[i]):
+            buf.append(lines[i].strip())
+            i += 1
+        out.append('<p dir="auto">%s</p>' % '<br>'.join(inline(x) for x in buf))
+    return '\n'.join(out)
+
+
 # ---------- renderers ----------
 CSS = ("body{font-family:Tahoma,Segoe UI,sans-serif;max-width:860px;margin:2em auto;padding:0 1em;background:#f5f5f7}"
-       ".m{padding:.8em 1em;margin:.6em 0;border-radius:10px;white-space:pre-wrap;line-height:1.7}"
+       ".m{padding:.8em 1em;margin:.6em 0;border-radius:10px;line-height:1.9;overflow-wrap:anywhere}"
        ".user{background:#dbeafe}.assistant{background:#fff}.r{font-size:.75em;color:#666;margin-bottom:.3em}"
+       ".m p,.m h1,.m h2,.m h3,.m h4,.m ul,.m ol,.m blockquote{margin:.45em 0;text-align:start;unicode-bidi:plaintext}"
+       ".m pre{direction:ltr;text-align:left;background:#0f172a;color:#e2e8f0;padding:.8em;border-radius:8px;overflow-x:auto;white-space:pre}"
+       ".m code{direction:ltr;unicode-bidi:isolate;background:rgba(127,127,127,.18);padding:0 .25em;border-radius:4px;font-family:Consolas,monospace}"
+       ".m pre code{background:none;padding:0}.m table{border-collapse:collapse;margin:.5em 0}.m td,.m th{border:1px solid #aaa;padding:.3em .6em}"
+       ".m blockquote{border-inline-start:4px solid #8aa;padding-inline-start:.8em;color:#555}bdi{unicode-bidi:isolate}"
        "input{width:100%;padding:.6em;font-size:1em;margin-bottom:1em}a{display:block;padding:.35em 0}")
 
 
@@ -103,12 +189,12 @@ def write_chat(folder, title, created, msgs, source):
     for role, text, t in msgs:
         who = 'من' if role == 'user' else ('هوش مصنوعی' if role == 'assistant' else role)
         md += ['## %s  %s' % (who, fmt(t)), '', text, '']
-        body.append('<div class="m %s" dir="auto"><div class="r">%s %s</div>%s</div>' % (
-            'user' if role == 'user' else 'assistant', html.escape(who), fmt(t), html.escape(text)))
+        body.append('<div class="m %s"><div class="r" dir="rtl">%s %s</div>%s</div>' % (
+            'user' if role == 'user' else 'assistant', html.escape(who), fmt(t), md_to_html(text)))
     with open(path + '.md', 'w', encoding='utf-8') as f:
         f.write('\n'.join(md))
     with open(path + '.html', 'w', encoding='utf-8') as f:
-        f.write('<!doctype html><meta charset="utf-8"><title>%s</title><style>%s</style><h2 dir="auto">%s</h2>%s'
+        f.write('<!doctype html><html lang="fa"><meta charset="utf-8"><title>%s</title><style>%s</style><h2 dir="auto">%s</h2>%s'
                 % (html.escape(title), CSS, html.escape(title), '\n'.join(body)))
     return path + '.html'
 
@@ -275,7 +361,7 @@ def add_manual(out, kind, title, source, text, files, log=print):
         page = os.path.join(pdir, 'index.html')
         with open(page, 'w', encoding='utf-8') as f:
             f.write('<!doctype html><meta charset="utf-8"><title>%s</title><style>%s</style><h2 dir="auto">%s</h2>'
-                    '<div class="m assistant" dir="auto">%s</div>%s'
-                    % (html.escape(title), CSS, html.escape(title), html.escape(text or ''), links))
+                    '<div class="m assistant">%s</div>%s'
+                    % (html.escape(title), CSS, html.escape(title), md_to_html(text or ''), links))
     write_index(out, [(source if kind == 'chat' else 'Project', title, fmt(now, '%Y-%m-%d'), page)])
     log('ذخیره شد: %s (%d فایل)' % (title, len(copied) if kind == 'chat' else len(files or [])))
