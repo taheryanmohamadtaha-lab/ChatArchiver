@@ -118,6 +118,7 @@ class App(tk.Tk):
         f = tk.Frame(t2)
         f.pack(fill='x', padx=10, pady=3)
         self.make_btn(f, 'افزودن فایل‌ها...', self.pick_files).pack(side='right')
+        self.make_btn(f, 'چسباندن از کلیپ‌بورد', self.paste_clip).pack(side='left')
         self.files_lbl = tk.Label(f, text='بدون فایل', anchor='e')
         self.files_lbl.pack(side='right', padx=8)
         self.make_btn(t2, 'ذخیره در آرشیو', self.save_manual, big=True).pack(pady=6)
@@ -126,6 +127,7 @@ class App(tk.Tk):
         self.logbox.pack(fill='both', padx=10, pady=(0, 10))
         self.log(HELP)
 
+        self.setup_clipboard()
         self.set_theme(self.theme_name)
         self.protocol('WM_DELETE_WINDOW', self.on_close)
         self.tick()
@@ -274,6 +276,54 @@ class App(tk.Tk):
         except tk.TclError:
             return
         self.after(40, self.tick)
+
+    # ---------- کلیپ‌بورد (کار کردن Ctrl+V با کیبورد فارسی) ----------
+    def setup_clipboard(self):
+        def on_key(e):
+            w = e.widget
+            if w.winfo_class() not in ('Text', 'Entry', 'TCombobox'):
+                return None
+            k = e.keycode
+            if k == 65:  # A
+                if w.winfo_class() == 'Text':
+                    w.tag_add('sel', '1.0', 'end-1c')
+                else:
+                    w.select_range(0, 'end')
+                    w.icursor('end')
+                return 'break'
+            if e.keysym.lower() in ('v', 'c', 'x'):
+                return None  # با کیبورد انگلیسی، خود Tk کار را انجام می‌دهد
+            ev = {86: '<<Paste>>', 67: '<<Copy>>', 88: '<<Cut>>'}.get(k)
+            if ev:
+                w.event_generate(ev)
+                return 'break'
+            return None
+
+        self.bind_all('<Control-KeyPress>', on_key)
+
+        menu = tk.Menu(self, tearoff=0)
+
+        def show(e):
+            w = e.widget
+            if w.winfo_class() not in ('Text', 'Entry'):
+                return
+            w.focus_set()
+            menu.delete(0, 'end')
+            menu.add_command(label='برش', command=lambda: w.event_generate('<<Cut>>'))
+            menu.add_command(label='کپی', command=lambda: w.event_generate('<<Copy>>'))
+            menu.add_command(label='چسباندن', command=lambda: w.event_generate('<<Paste>>'))
+            menu.tk_popup(e.x_root, e.y_root)
+
+        self.bind_all('<Button-3>', show)
+
+    def paste_clip(self):
+        try:
+            data = self.clipboard_get()
+        except tk.TclError:
+            messagebox.showinfo('توجه', 'کلیپ‌بورد خالی است. اول متن را کپی کنید.')
+            return
+        self.text.insert('insert', data)
+        self.text.focus_set()
 
     # ---------- عملیات ----------
     def pick_src(self):
