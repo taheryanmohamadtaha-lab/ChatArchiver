@@ -1,8 +1,10 @@
 import json
 import math
 import os
+import pathlib
 import random
 import threading
+import webbrowser
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 import archiver
@@ -70,6 +72,7 @@ class App(tk.Tk):
         bar.pack(fill='x', padx=10, pady=(8, 0))
         self.toggle_btn = self.make_btn(bar, '', self.toggle_daynight)
         self.toggle_btn.pack(side='left')
+        self.make_btn(bar, 'باز کردن آرشیو', self.open_index).pack(side='right')
         self.theme_box = ttk.Combobox(bar, values=list(THEMES), state='readonly', width=12, justify='center')
         self.theme_box.pack(side='left', padx=8)
         self.theme_box.bind('<<ComboboxSelected>>', lambda e: self.set_theme(self.theme_box.get()))
@@ -293,9 +296,21 @@ class App(tk.Tk):
         self.after(0, lambda: (self.logbox.insert('end', msg + '\n'), self.logbox.see('end')))
 
     def open_index(self):
-        idx = os.path.join(self.out.get(), 'index.html')
-        if os.path.exists(idx):
-            os.startfile(idx)
+        idx = os.path.normpath(os.path.join(self.out.get(), 'index.html'))
+        if not os.path.exists(idx):
+            return
+        try:
+            if webbrowser.open(pathlib.Path(idx).as_uri()):
+                return
+        except Exception:
+            pass
+        for target in (idx, os.path.dirname(idx)):
+            try:
+                os.startfile(target)
+                return
+            except Exception:
+                continue
+        self.log('آرشیو ذخیره شد: ' + idx)
 
     def start(self):
         if not self.src.get():
