@@ -1,15 +1,18 @@
+"""ChatArchiver - آرشیو چت‌ها، پروژه‌ها و فایل‌ها.  Author: Majid Taherian"""
 import datetime
 import json
 import math
 import os
 import pathlib
 import random
+import re
 import shutil
 import tempfile
 import threading
 import webbrowser
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
+from tkinter import filedialog, messagebox, scrolledtext, ttk
+from tkinter import font as tkfont
 import archiver
 
 SETTINGS = os.path.join(os.path.expanduser('~'), '.chatarchiver_settings.json')
@@ -38,11 +41,26 @@ THEMES = {
     'نئون': dict(bg='#0b0b12', card='#161622', fg='#e9fff6', border='#2a2a40', accent='#00c896', accent2='#00a07a',
                  grad=('#12002b', '#00c896'), deco=('✦', '#aaffee'),
                  fx=dict(sym='✦', mode='twinkle', colors=['#00ffc6', '#ff4fd8', '#7a5cff', '#ffffff'], n=20, size=(8, 16))),
+    'نئون صورتی': dict(bg='#fff4fa', card='#ffffff', fg='#3a1030', border='#ffc2e2', accent='#ff1f8e', accent2='#d10070',
+                       grad=('#ff1f8e', '#ffb300'), deco=('✦', '#fff7d6'),
+                       fx=dict(sym='✦', mode='twinkle', colors=['#ffffff', '#fff2a8', '#ffd1ea'], n=18, size=(8, 16))),
+    'نئون آبی': dict(bg='#f0fbff', card='#ffffff', fg='#06283d', border='#b3e7ff', accent='#00a2ff', accent2='#0078c8',
+                     grad=('#00e5ff', '#2979ff'), deco=('○', '#e6fbff'),
+                     fx=dict(sym='○', mode='rise', colors=['#ffffff', '#b8f3ff', '#e0fbff'], n=14, size=(10, 24))),
+    'نئون سبز': dict(bg='#f1fff7', card='#ffffff', fg='#0a3320', border='#b8f5d3', accent='#00b86b', accent2='#008a50',
+                     grad=('#00e676', '#c6ff00'), deco=('✿', '#f3ffe0'),
+                     fx=dict(sym='✦', mode='twinkle', colors=['#ffffff', '#f4ffb0', '#b9ffd9'], n=18, size=(8, 16))),
+    'نئون نارنجی': dict(bg='#fff7f0', card='#ffffff', fg='#3d1a00', border='#ffd2ad', accent='#ff6a00', accent2='#d14f00',
+                        grad=('#ff6a00', '#ffd600'), deco=('☀', '#fff6c2'),
+                        fx=dict(sym='✦', mode='twinkle', colors=['#ffffff', '#fff3b0', '#ffe0b2'], n=18, size=(8, 16))),
+    'نئون بنفش': dict(bg='#f8f1ff', card='#ffffff', fg='#2a0b45', border='#e3c8ff', accent='#a100ff', accent2='#7a00c4',
+                      grad=('#d500f9', '#651fff'), deco=('✦', '#f4e1ff'),
+                      fx=dict(sym='✦', mode='twinkle', colors=['#ffffff', '#f0c8ff', '#c8b3ff'], n=18, size=(8, 16))),
 }
 
 NAV = [('home', '⌂   خانه'), ('import', '⇩   ورود از Export'), ('manual', '✎   ورود دستی'),
        ('archive', '☰   آرشیو'), ('code', '‹›   کدها'), ('export', '⇪   خروجی'), ('backup', '⟳   پشتیبان‌گیری'),
-       ('settings', '⚙   تنظیمات'), ('help', '?   راهنما')]
+       ('settings', '⚙   تنظیمات'), ('help', '?   راهنما و درباره')]
 
 TREE_HEADS = {'date': 'تاریخ', 'source': 'منبع', 'kind': 'نوع', 'title': 'عنوان'}
 KIND_FA = {'chat': 'چت', 'project': 'پروژه', 'file': 'فایل'}
@@ -77,6 +95,115 @@ def is_rtl_line(line):
     return False
 
 
+# ---------- راست‌چین‌سازی فارسی ----------
+# ویندوز/Tk متن را با جهت پایه‌ی چپ‌به‌راست می‌کشد؛ برای اینکه ترتیب کلمه‌های فارسی و لاتین و جای نقطه درست
+# شود، هر خط فارسی داخل یک «جاسازی راست‌به‌چپ» (RLE ... PDF) قرار می‌گیرد. این فقط در نمایش است.
+RLE, PDF = '\u202b', '\u202c'
+HAS_FA = re.compile('[\u0600-\u06ff\u0750-\u077f\ufb50-\ufdff\ufe70-\ufeff]')
+BIDI_CTRL = re.compile('[\u202a-\u202e\u200e\u200f\u2066-\u2069]')
+RTL_FIX = True
+
+
+def fa(s):
+    if not RTL_FIX or not isinstance(s, str) or not HAS_FA.search(s):
+        return s
+    return '\n'.join(l if (not HAS_FA.search(l) or l.startswith(RLE)) else RLE + l + PDF for l in s.split('\n'))
+
+
+_fonts = {}
+
+
+def measure_font(spec):
+    key = repr(spec)
+    if key not in _fonts:
+        try:
+            _fonts[key] = tkfont.Font(font=spec) if spec else tkfont.Font(family='Tahoma', size=10)
+        except Exception:
+            _fonts[key] = tkfont.Font(family='Tahoma', size=10)
+    return _fonts[key]
+
+
+def wrap_px(text, spec, px):
+    """شکستن خط‌ها دستی (چون Tk هر خط شکسته را جدا و چپ‌به‌راست می‌کشد)."""
+    out = []
+    f = measure_font(spec)
+    for para in str(text).split('\n'):
+        if not px:
+            out.append(para)
+            continue
+        line = ''
+        for w in para.split(' '):
+            cand = (line + ' ' + w) if line else w
+            if not line or f.measure(cand) <= px:
+                line = cand
+            else:
+                out.append(line)
+                line = w
+        out.append(line)
+    return out
+
+
+class FLabel(tk.Label):
+    def __init__(self, master=None, cnf={}, **kw):
+        self._wrap = kw.pop('wraplength', 0)
+        self._fspec = kw.get('font')
+        if 'text' in kw:
+            kw['text'] = self._fmt(kw['text'])
+        super().__init__(master, cnf, **kw)
+
+    def _fmt(self, text):
+        return '\n'.join(fa(l) for l in wrap_px(text, self._fspec, self._wrap))
+
+    def configure(self, cnf=None, **kw):
+        if isinstance(cnf, dict):
+            kw, cnf = dict(cnf, **kw), None
+        if 'wraplength' in kw:
+            self._wrap = kw.pop('wraplength')
+        if 'font' in kw:
+            self._fspec = kw['font']
+        if 'text' in kw:
+            kw['text'] = self._fmt(kw['text'])
+        return super().configure(cnf, **kw)
+
+    config = configure
+
+
+def _fa_widget(base):
+    class W(base):
+        def __init__(self, master=None, cnf={}, **kw):
+            if 'text' in kw:
+                kw['text'] = fa(kw['text'])
+            super().__init__(master, cnf, **kw)
+
+        def configure(self, cnf=None, **kw):
+            if isinstance(cnf, dict):
+                kw, cnf = dict(cnf, **kw), None
+            if 'text' in kw:
+                kw['text'] = fa(kw['text'])
+            return super().configure(cnf, **kw)
+
+        config = configure
+    W.__name__ = base.__name__
+    return W
+
+
+tk.Label = FLabel
+tk.Button = _fa_widget(tk.Button)
+tk.Radiobutton = _fa_widget(tk.Radiobutton)
+tk.Checkbutton = _fa_widget(tk.Checkbutton)
+
+
+def _mb(fn):
+    def inner(title=None, message=None, **kw):
+        return fn(fa(title), fa(message), **kw)
+    return inner
+
+
+for _n in ('showinfo', 'showwarning', 'askyesno'):
+    setattr(messagebox, _n, _mb(getattr(messagebox, _n)))
+
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -86,6 +213,9 @@ class App(tk.Tk):
         self.option_add('*Font', 'Tahoma 10')
         self.settings = self.load_settings()
         st = self.settings
+        global RTL_FIX
+        RTL_FIX = bool(st.get('rtl_fix', True))
+        self.rtl_var = tk.BooleanVar(value=RTL_FIX)
         self.theme_name = st.get('theme') if st.get('theme') in THEMES else 'بنفش'
         home = os.path.expanduser('~')
         self.out = tk.StringVar(value=st.get('out') or os.path.join(home, 'ChatArchive'))
@@ -167,7 +297,7 @@ class App(tk.Tk):
 
     def save_settings(self):
         self.settings.update(theme=self.theme_name, out=self.out.get(), backup_dir=self.backup_dir.get(),
-                             anim=bool(self.anim.get()))
+                             anim=bool(self.anim.get()), rtl_fix=bool(self.rtl_var.get()))
         try:
             with open(SETTINGS, 'w', encoding='utf-8') as f:
                 json.dump(self.settings, f, ensure_ascii=False)
@@ -265,6 +395,7 @@ class App(tk.Tk):
         ins = self.card(row2)
         ins.pack(side='right', fill='y', padx=(4, 0))
         ins.config(width=270)
+        ins.pack_propagate(False)
         self.card_title(ins, 'نکته‌ها')
         self.ins_host = tk.Frame(ins)
         self.ins_host.pack(fill='both', expand=True, padx=8, pady=(0, 10))
@@ -280,7 +411,7 @@ class App(tk.Tk):
                             selectmode='extended' if sortable else 'browse')
         for c, w in (('date', 100), ('source', 100), ('kind', 70), ('title', 360)):
             kw = {'command': (lambda cc=c: self.sort_by(cc))} if sortable else {}
-            tree.heading(c, text=TREE_HEADS[c], anchor='e', **kw)
+            tree.heading(c, text=fa(TREE_HEADS[c]), anchor='e', **kw)
             tree.column(c, width=w, anchor='e', stretch=(c == 'title'))
         sb = ttk.Scrollbar(fr, orient='vertical', command=tree.yview)
         tree.configure(yscrollcommand=sb.set)
@@ -295,7 +426,7 @@ class App(tk.Tk):
         self.tree_rows[tree] = rows
         for i, r in enumerate(rows):
             tree.insert('', 'end', iid=str(i),
-                        values=(r['date'], r['source'], KIND_FA.get(r['kind'], ''), r['title']))
+                        values=(r['date'], fa(r['source']), fa(KIND_FA.get(r['kind'], '')), fa(r['title'])))
 
     def selected_rows(self, tree):
         rows = self.tree_rows.get(tree, [])
@@ -396,7 +527,7 @@ class App(tk.Tk):
             f = tk.Frame(s1)
             f.pack(fill='x', pady=4)
             tk.Label(f, text=label, width=8, anchor='e').pack(side='right')
-            e = tk.Entry(f, textvariable=var)
+            e = tk.Entry(f, textvariable=var, justify='right' if var is self.m_title else 'left')
             e.pack(side='right', fill='x', expand=True, padx=6, ipady=4)
             h = tk.Label(s1, text=hint, anchor='e')
             h.role = 'muted'
@@ -420,6 +551,7 @@ class App(tk.Tk):
         self.sum_lbl.pack(fill='x', pady=6)
         self.prev_box = scrolledtext.ScrolledText(s3, height=10, bd=0, relief='flat')
         self.prev_box.pack(fill='both', expand=True)
+        self.prev_box.tag_configure('rtl', justify='right')
         f = tk.Frame(s3)
         f.pack(fill='x', pady=6)
         self.make_btn(f, 'ذخیره در آرشیو', self.save_manual, big=True).pack(side='right')
@@ -454,7 +586,7 @@ class App(tk.Tk):
                      font=('Tahoma', 10, 'bold' if i == self.m_idx else 'normal'))
 
     def get_text(self):
-        return self.text.get('1.0', 'end-1c').strip('\n')
+        return BIDI_CTRL.sub('', self.text.get('1.0', 'end-1c')).strip('\n')
 
     def effective_title(self):
         return self.m_title.get().strip() or archiver.auto_title(self.get_text())
@@ -469,7 +601,11 @@ class App(tk.Tk):
             kind, self.m_source.get() or 'Manual', self.effective_title(), paras, len(txt), len(self.m_files), extra))
         self.prev_box.config(state='normal')
         self.prev_box.delete('1.0', 'end')
-        self.prev_box.insert('1.0', txt[:1500] + ('\n…' if len(txt) > 1500 else ''))
+        shown = (txt[:1500] + ('\n…' if len(txt) > 1500 else '')).split('\n')
+        for i, line in enumerate(shown, 1):
+            self.prev_box.insert('end', (fa(line) if is_rtl_line(line) else line) + ('\n' if i < len(shown) else ''))
+            if is_rtl_line(line):
+                self.prev_box.tag_add('rtl', '%d.0' % i, '%d.end' % i)
         self.prev_box.config(state='disabled')
 
     def preview_browser(self):
@@ -496,7 +632,7 @@ class App(tk.Tk):
         self.src_box.set('همه')
         self.src_box.pack(side='left', padx=(10, 4))
         tk.Label(bar, text='منبع:').pack(side='left')
-        tk.Entry(bar, textvariable=self.q).pack(side='right', fill='x', expand=True, padx=(0, 8), ipady=5)
+        tk.Entry(bar, textvariable=self.q, justify='right').pack(side='right', fill='x', expand=True, padx=(0, 8), ipady=5)
         c = self.card(p)
         c.pack(fill='both', expand=True)
         self.arch_title = self.card_title(c, 'آرشیو')
@@ -514,7 +650,7 @@ class App(tk.Tk):
         fr.pack(fill='x', padx=14, pady=(2, 4))
         self.ftree = ttk.Treeview(fr, columns=('size', 'group', 'name'), show='headings', height=3, selectmode='browse')
         for col, txt, w in (('size', 'حجم', 80), ('group', 'نوع', 70), ('name', 'نام', 420)):
-            self.ftree.heading(col, text=txt, anchor='e')
+            self.ftree.heading(col, text=fa(txt), anchor='e')
             self.ftree.column(col, width=w, anchor='e', stretch=(col == 'name'))
         self.ftree.pack(fill='x')
         self.ftree.bind('<Double-1>', lambda e: self.open_item_file())
@@ -553,7 +689,7 @@ class App(tk.Tk):
         rows.sort(key=lambda r: str(r[col]).casefold(), reverse=self.sort_rev)
         self.fill_tree(self.arch_tree, rows)
         for c, txt in TREE_HEADS.items():
-            self.arch_tree.heading(c, text=txt + ((' ▼' if self.sort_rev else ' ▲') if c == col else ''))
+            self.arch_tree.heading(c, text=fa(txt + ((' ▼' if self.sort_rev else ' ▲') if c == col else '')))
         self.arch_title.config(text='آرشیو (%d)' % len(rows))
         self.refresh_item_files()
 
@@ -562,7 +698,39 @@ class App(tk.Tk):
         self.item_files = archiver.entry_files(self.out.get(), rows[0]) if len(rows) == 1 else []
         self.ftree.delete(*self.ftree.get_children())
         for i, f in enumerate(self.item_files):
-            self.ftree.insert('', 'end', iid=str(i), values=(human(f['size']), f['group'], f['name']))
+            self.ftree.insert('', 'end', iid=str(i), values=(human(f['size']), fa(f['group']), fa(f['name'])))
+
+    def ask_text(self, title, prompt, initial=''):
+        d = tk.Toplevel(self)
+        d.title(fa(title))
+        d.transient(self)
+        d.resizable(False, False)
+        t = self.colors()
+        d.configure(bg=t['bg'])
+        tk.Label(d, text=prompt, anchor='e').pack(fill='x', padx=16, pady=(14, 4))
+        var = tk.StringVar(value=initial)
+        e = tk.Entry(d, textvariable=var, width=48, justify='right')
+        e.pack(padx=16, pady=4, ipady=5)
+        res = {'v': None}
+
+        def ok(*_):
+            res['v'] = var.get()
+            d.destroy()
+
+        row = tk.Frame(d)
+        row.pack(fill='x', padx=16, pady=(8, 14))
+        self.make_btn(row, 'تأیید', ok).pack(side='right')
+        self.make_btn(row, 'انصراف', d.destroy, ghost=True).pack(side='right', padx=8)
+        e.bind('<Return>', ok)
+        d.bind('<Escape>', lambda *_: d.destroy())
+        self.walk(d, t)
+        d.update_idletasks()
+        d.geometry('+%d+%d' % (self.winfo_rootx() + 220, self.winfo_rooty() + 180))
+        d.grab_set()
+        e.focus_set()
+        e.select_range(0, 'end')
+        self.wait_window(d)
+        return res['v']
 
     def rename_item(self):
         rows = self.selected_rows(self.arch_tree)
@@ -570,7 +738,7 @@ class App(tk.Tk):
             messagebox.showinfo('توجه', 'برای تغییر نام، فقط یک مورد را انتخاب کنید.')
             return
         e = rows[0]
-        new = simpledialog.askstring('تغییر نام', 'نام جدید:', initialvalue=e['title'], parent=self)
+        new = self.ask_text('تغییر نام', 'نام جدید:', e['title'])
         if not new or new.strip() == e['title']:
             return
         try:
@@ -622,7 +790,7 @@ class App(tk.Tk):
         bar = tk.Frame(p)
         bar.pack(fill='x', pady=(4, 6))
         self.make_btn(bar, 'بازخوانی', self.refresh_code, ghost=True).pack(side='left')
-        tk.Entry(bar, textvariable=self.cq).pack(side='right', fill='x', expand=True, padx=(0, 8), ipady=5)
+        tk.Entry(bar, textvariable=self.cq, justify='right').pack(side='right', fill='x', expand=True, padx=(0, 8), ipady=5)
         c = self.card(p)
         c.pack(fill='both', expand=True)
         self.code_title = self.card_title(c, 'کدها')
@@ -635,7 +803,7 @@ class App(tk.Tk):
         self.code_tree = ttk.Treeview(left, columns=('ext', 'name', 'title'), show='headings', height=14,
                                       selectmode='browse')
         for col, txt, w in (('ext', 'زبان', 50), ('name', 'فایل', 130), ('title', 'چت / پروژه', 190)):
-            self.code_tree.heading(col, text=txt, anchor='e')
+            self.code_tree.heading(col, text=fa(txt), anchor='e')
             self.code_tree.column(col, width=w, anchor='e', stretch=(col == 'title'))
         sb = ttk.Scrollbar(left, orient='vertical', command=self.code_tree.yview)
         self.code_tree.configure(yscrollcommand=sb.set)
@@ -667,7 +835,7 @@ class App(tk.Tk):
         self.code_items = items
         self.code_tree.delete(*self.code_tree.get_children())
         for i, x in enumerate(items):
-            self.code_tree.insert('', 'end', iid=str(i), values=(x['ext'], x['name'], x['title']))
+            self.code_tree.insert('', 'end', iid=str(i), values=(x['ext'], fa(x['name']), fa(x['title'])))
         self.code_title.config(text='کدها (%d)' % len(items))
         self.set_code_view('')
 
@@ -791,6 +959,10 @@ class App(tk.Tk):
         self.theme_box.bind('<<ComboboxSelected>>', lambda e: self.set_theme(self.theme_box.get()))
         tk.Label(r, text='تم:').pack(side='right')
         tk.Checkbutton(c, text='انیمیشن هدر', variable=self.anim, anchor='e').pack(fill='x', padx=14, pady=(0, 12))
+        tk.Checkbutton(c, text='راست‌چین‌سازی هوشمند فارسی', variable=self.rtl_var, anchor='e',
+                       command=self.on_rtl_toggle).pack(fill='x', padx=14, pady=(0, 4))
+        self.note(c, 'اگر نوشته‌ها مربع یا به‌هم‌ریخته دیده شدند، این گزینه را خاموش کنید و برنامه را دوباره باز کنید.')
+        tk.Frame(c, height=8).pack()
         c2 = self.card(p)
         c2.pack(fill='x', pady=6)
         self.card_title(c2, 'سطل آرشیو')
@@ -801,6 +973,12 @@ class App(tk.Tk):
         self.make_btn(r2, 'خالی کردن سطل', self.do_empty_trash).pack(side='right')
         self.make_btn(r2, 'باز کردن سطل', lambda: self.open_dir(os.path.join(self.out.get(), '.trash')),
                       ghost=True).pack(side='right', padx=8)
+
+    def on_rtl_toggle(self):
+        global RTL_FIX
+        RTL_FIX = bool(self.rtl_var.get())
+        self.save_settings()
+        messagebox.showinfo('توجه', 'برای اعمال کامل تغییر، برنامه را ببندید و دوباره باز کنید.')
 
     def do_empty_trash(self):
         if messagebox.askyesno('خالی کردن سطل', 'همه‌ی موردهای سطل برای همیشه پاک شوند؟'):
@@ -817,6 +995,13 @@ class App(tk.Tk):
         self.card_title(c, 'راهنما')
         self.note(c, HELP, wrap=760)
         tk.Frame(c, height=10).pack()
+        a = self.card(p)
+        a.pack(fill='x', pady=6)
+        self.card_title(a, 'درباره برنامه')
+        self.note(a, 'ChatArchiver — آرشیو شخصی چت‌ها، پروژه‌ها و فایل‌ها (ChatGPT، Claude و ...) روی کامپیوتر شما.', wrap=760)
+        self.note(a, 'نسخه: 1.0')
+        who = tk.Label(a, text='سازنده: Majid Taherian', anchor='e', font=('Tahoma', 11, 'bold'))
+        who.pack(fill='x', padx=14, pady=(4, 12))
 
     # ---------- تم ----------
     def set_theme(self, name):
@@ -988,9 +1173,9 @@ class App(tk.Tk):
                 return
             w.focus_set()
             menu.delete(0, 'end')
-            menu.add_command(label='برش', command=lambda: w.event_generate('<<Cut>>'))
-            menu.add_command(label='کپی', command=lambda: w.event_generate('<<Copy>>'))
-            menu.add_command(label='چسباندن', command=lambda: w.event_generate('<<Paste>>'))
+            menu.add_command(label=fa('برش'), command=lambda: w.event_generate('<<Cut>>'))
+            menu.add_command(label=fa('کپی'), command=lambda: w.event_generate('<<Copy>>'))
+            menu.add_command(label=fa('چسباندن'), command=lambda: w.event_generate('<<Paste>>'))
             menu.tk_popup(e.x_root, e.y_root)
 
         self.bind_all('<Button-3>', show)
@@ -1002,8 +1187,13 @@ class App(tk.Tk):
         if n > 5000:
             return
         for i in range(1, n + 1):
-            if is_rtl_line(t.get('%d.0' % i, '%d.end' % i)):
+            line = t.get('%d.0' % i, '%d.end' % i)
+            if is_rtl_line(line):
+                if RTL_FIX and not line.startswith(RLE):
+                    t.insert('%d.0' % i, RLE)
                 t.tag_add('rtl', '%d.0' % i, '%d.end' % i)
+            elif line.startswith(RLE):
+                t.delete('%d.0' % i, '%d.1' % i)
 
     def paste_clip(self):
         try:
@@ -1026,7 +1216,7 @@ class App(tk.Tk):
         self.log_visible = show
 
     def log(self, msg):
-        self.after(0, lambda: (self.logbox.insert('end', msg + '\n'), self.logbox.see('end')))
+        self.after(0, lambda: (self.logbox.insert('end', fa(msg) + '\n'), self.logbox.see('end')))
 
     def open_path(self, path):
         path = os.path.normpath(path)
