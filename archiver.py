@@ -1,4 +1,4 @@
-"""هسته برنامه: آرشیو چت‌ها، پروژه‌ها و فایل‌ها + کدهای جداشده.  Author: Majid Taherian"""
+"""هسته برنامه: آرشیو چت‌ها، پروژه‌ها و فایل‌ها + کدهای جداشده.  Author: Majid Taheryan"""
 import datetime
 import html
 import json
@@ -699,3 +699,26 @@ def backup_zip(out, dest_dir):
     os.makedirs(dest_abs, exist_ok=True)
     base = os.path.join(dest_abs, 'ChatArchive_backup_' + datetime.datetime.now().strftime('%Y-%m-%d_%H%M'))
     return shutil.make_archive(base, 'zip', out_abs)
+
+
+def rebuild_code(out):
+    """کدهای چت‌ها و پروژه‌های موجود در آرشیو را (که قبلاً جدا نشده‌اند) استخراج می‌کند."""
+    made = 0
+    for e in load_index(out):
+        page = os.path.join(out, e['rel'])
+        try:
+            if e['kind'] == 'chat':
+                src, dest = page[:-5] + '.md', page[:-5] + '_code'
+            elif e['kind'] == 'project':
+                src, dest = os.path.join(os.path.dirname(page), 'README.md'), os.path.join(os.path.dirname(page), 'code')
+            else:
+                continue
+            if os.path.exists(os.path.join(dest, 'code_meta.json')) or not os.path.exists(src):
+                continue
+            with open(src, 'r', encoding='utf-8') as f:
+                text = f.read()
+            if save_code(dest, e['title'], e['source'], [text]):
+                made += 1
+        except Exception:
+            continue
+    return made
