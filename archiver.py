@@ -113,6 +113,9 @@ CSS = (
     ".m blockquote{border-inline-start:4px solid #8aa;padding-inline-start:.8em;color:#555}bdi{unicode-bidi:isolate}"
     "input{width:100%;padding:.6em;font-size:1em;margin-bottom:1em}a{display:block;padding:.35em 0}"
 )
+CSS += ("@media print{body{background:#fff;max-width:none;margin:0}.cp{display:none}"
+        ".m pre{white-space:pre-wrap;overflow:visible}.item{break-before:page}.item:first-of-type{break-before:auto}"
+        "*{-webkit-print-color-adjust:exact;print-color-adjust:exact}}")
 COPY_JS = ("<script>function cp(b){var t=b.parentNode.querySelector('code').innerText;"
            "function ok(){b.textContent='کپی شد ✓';setTimeout(function(){b.textContent='کپی'},1400)}"
            "if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(t).then(ok)}"
@@ -266,6 +269,14 @@ def entry(out, source, title, date, page, kind):
     return dict(source=source, title=title, date=date, rel=posix(os.path.relpath(page, out)), kind=kind)
 
 
+BIDI_CTRL = re.compile('[\u202a-\u202e\u200e\u200f\u2066-\u2069]')
+
+
+def msg_div(who, tstr, text, cls):
+    return '<div class="m %s"><div class="r" dir="rtl">%s %s</div>%s</div>' % (
+        cls, html.escape(who), tstr, md_to_html(text))
+
+
 def write_chat(folder, title, created, msgs, source, files=None):
     base = '%s_%s' % (fmt(created, '%Y-%m-%d') or 'nodate', safe(title))
     path, i = os.path.join(folder, base), 2
@@ -292,8 +303,7 @@ def write_chat(folder, title, created, msgs, source, files=None):
     for role, text, t in msgs:
         who = 'من' if role == 'user' else ('هوش مصنوعی' if role == 'assistant' else role)
         md += ['## %s  %s' % (who, fmt(t)), '', text, '']
-        body.append('<div class="m %s"><div class="r" dir="rtl">%s %s</div>%s</div>' % (
-            'user' if role == 'user' else 'assistant', html.escape(who), fmt(t), md_to_html(text)))
+        body.append(msg_div(who, fmt(t), text, 'user' if role == 'user' else 'assistant'))
     with open(path + '.md', 'w', encoding='utf-8') as f:
         f.write('\n'.join(md))
     with open(path + '.html', 'w', encoding='utf-8') as f:
@@ -324,6 +334,10 @@ def write_index(out, new=(), remove=()):
     for r in remove:
         merged.pop(r, None)
     for e in new:
+        old = merged.get(e['rel'])
+        if old:
+            e.setdefault('star', old.get('star', False))
+            e.setdefault('category', old.get('category', ''))
         merged[e['rel']] = e
     rows = sorted(merged.values(), key=lambda e: e['date'], reverse=True)
     os.makedirs(out, exist_ok=True)
@@ -363,6 +377,8 @@ def load_index(out):
         e.setdefault('source', '')
         e.setdefault('title', '')
         e.setdefault('date', '')
+        e['star'] = bool(e.get('star', False))
+        e['category'] = e.get('category') or ''
         rows.append(e)
     rows.sort(key=lambda e: e['date'], reverse=True)
     return rows
@@ -722,3 +738,262 @@ def rebuild_code(out):
         except Exception:
             continue
     return made
+
+
+
+# ---------- ستاره و دسته‌بندی ----------
+def _update_fields(out, entries, **fields):
+    cur = {e['rel']: e for e in load_index(out)}
+    es = [dict(cur[e['rel']], **fields) for e in entries if e.get('kind') != 'file' and e['rel'] in cur]
+    if es:
+        write_index(out, es)
+    return len(es)
+
+
+def set_star(out, entries, value):
+    return _update_fields(out, entries, star=bool(value))
+
+
+def set_category(out, entries, name):
+    return _update_fields(out, entries, category=(name or '').strip())
+
+
+def categories(out):
+    return sorted({e['category'] for e in load_index(out) if e.get('category')})
+
+
+# ---------- ویرایش متن چت و پروژه ----------
+HDR = re.compile(r'^## (.+?)  (\d{4}-\d{2}-\d{2} \d{2}:\d{2})?\s*$')
+
+
+def parse_chat_md(text):
+    """(عنوان, [(گوینده, متن, زمان)]) از فایل Markdown یک چت."""
+    lines = str(text).replace('\r\n', '\n').split('\n')
+    title, i = '', 0
+    if lines and lines[0].startswith('# '):
+        title, i = lines[0][2:].strip(), 1
+    msgs, cur, head = [], None, []
+    for ln in lines[i:]:
+        m = HDR.match(ln)
+        if m:
+            if cur:
+                msgs.append(cur)
+            cur = [m.group(1).strip(), m.group(2) or '', []]
+        elif cur is None:
+            head.append(ln)
+        else:
+            cur[2].append(ln)
+    if cur:
+        msgs.append(cur)
+    out = [(who, '\n'.join(body).strip('\n'), t) for who, t, body in msgs]
+    if not out:
+        rest = [l for k, l in enumerate(head) if not (k < 3 and ' — ' in l and not l.startswith('#'))]
+        out = [('متن/یادداشت', '\n'.join(rest).strip('\n'), '')]
+    return title, out
+
+
+def chat_page_from_md(md_text, fallback_title=''):
+    title, msgs = parse_chat_md(md_text)
+    title = title or fallback_title
+    body = '\n'.join(msg_div(w, t, tx, 'user' if w == 'من' else 'assistant') for w, tx, t in msgs)
+    return title, msgs, page_html(title, body)
+
+
+def get_edit_text(out, e):
+    page = os.path.join(out, e['rel'])
+    p = page[:-5] + '.md' if e['kind'] == 'chat' else os.path.join(os.path.dirname(page), 'README.md')
+    with open(p, 'r', encoding='utf-8') as f:
+        return f.read()
+
+
+def update_entry_text(out, e, new_text):
+    """متن ویرایش‌شده‌ی چت/پروژه را ذخیره و HTML و کدهای جداشده را دوباره می‌سازد."""
+    new_text = BIDI_CTRL.sub('', str(new_text).replace('\r\n', '\n')).strip('\n') + '\n'
+    page = os.path.join(out, e['rel'])
+    if e['kind'] == 'chat':
+        base = page[:-5]
+        title, msgs, doc = chat_page_from_md(new_text, e['title'])
+        if not new_text.lstrip().startswith('# '):
+            new_text = '# %s\n\n%s' % (title, new_text)
+        with open(base + '.md', 'w', encoding='utf-8') as f:
+            f.write(new_text)
+        with open(base + '.html', 'w', encoding='utf-8') as f:
+            f.write(doc)
+        shutil.rmtree(base + '_code', ignore_errors=True)
+        save_code(base + '_code', title, e['source'], [m[1] for m in msgs])
+    elif e['kind'] == 'project':
+        pdir = os.path.dirname(page)
+        first, _, rest = new_text.partition('\n')
+        if first.startswith('# '):
+            title, body = first[2:].strip() or e['title'], rest.strip('\n')
+        else:
+            title, body = e['title'], new_text.strip('\n')
+        names = [n for n in sorted(os.listdir(pdir)) if n not in ('README.md', 'index.html', 'code')
+                 and os.path.isfile(os.path.join(pdir, n))]
+        with open(os.path.join(pdir, 'README.md'), 'w', encoding='utf-8') as f:
+            f.write('# %s\n\n%s\n' % (title, body))
+        links = ''.join('<a href="%s">%s</a>' % (html.escape(n), html.escape(n)) for n in names)
+        with open(page, 'w', encoding='utf-8') as f:
+            f.write(page_html(title, '<div class="m assistant">%s</div>%s' % (md_to_html(body), links)))
+        shutil.rmtree(os.path.join(pdir, 'code'), ignore_errors=True)
+        save_code(os.path.join(pdir, 'code'), title, e['source'], [body])
+    else:
+        return e
+    if title != e['title']:
+        return rename_entry(out, e, title)
+    return e
+
+
+# ---------- خروجی Markdown / HTML / PDF ----------
+def find_browser():
+    cands = []
+    for env in ('PROGRAMFILES', 'PROGRAMFILES(X86)', 'LOCALAPPDATA'):
+        base = os.environ.get(env)
+        if base:
+            cands += [os.path.join(base, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+                      os.path.join(base, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+                      os.path.join(base, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe')]
+    for n in ('msedge', 'chrome', 'google-chrome', 'chromium', 'chromium-browser', 'brave'):
+        w = shutil.which(n)
+        if w:
+            cands.append(w)
+    for c in cands:
+        if os.path.exists(c):
+            return c
+    return None
+
+
+def html_to_pdf(html_path, pdf_path, timeout=120):
+    """HTML → PDF با مرورگر Edge/Chrome (بدون پنجره). راست‌به‌چپ و فارسی را مرورگر درست می‌کشد."""
+    import pathlib
+    import subprocess
+    import time
+    exe = find_browser()
+    if not exe:
+        raise RuntimeError('NO_BROWSER')
+    uri = pathlib.Path(html_path).resolve().as_uri()
+    pdf_path = os.path.abspath(pdf_path)
+    flags = 0x08000000 if os.name == 'nt' else 0
+    last = ''
+    for headless in ('--headless=new', '--headless'):
+        prof = tempfile.mkdtemp(prefix='chatarchiver_')
+        try:
+            if os.path.exists(pdf_path):
+                os.remove(pdf_path)
+            cmd = [exe, headless, '--disable-gpu', '--no-pdf-header-footer', '--print-to-pdf-no-header',
+                   '--allow-file-access-from-files', '--no-first-run', '--user-data-dir=' + prof,
+                   '--print-to-pdf=' + pdf_path, uri]
+            r = subprocess.run(cmd, timeout=timeout, capture_output=True, creationflags=flags)
+            last = (r.stderr or b'')[-300:].decode('utf-8', 'ignore')
+            for _ in range(20):
+                if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0:
+                    return pdf_path
+                time.sleep(0.25)
+        except subprocess.TimeoutExpired:
+            last = 'timeout'
+        finally:
+            shutil.rmtree(prof, ignore_errors=True)
+    raise RuntimeError('PDF_FAILED: ' + last)
+
+
+def _body_of(html_text):
+    return html_text.split('</h2>', 1)[-1].rsplit('<script>function cp', 1)[0]
+
+
+def combined_html(out, entries, title='خروجی آرشیو'):
+    toc, parts = [], []
+    for i, e in enumerate(entries, 1):
+        with open(os.path.join(out, e['rel']), 'r', encoding='utf-8') as f:
+            body = _body_of(f.read())
+        toc.append('<a dir="auto" href="#i%d">%s</a>' % (i, html.escape(e['title'])))
+        parts.append('<div class="item" id="i%d"><h2 dir="auto">%s</h2>%s</div>' % (i, html.escape(e['title']), body))
+    return ('<!doctype html><html lang="fa"><meta charset="utf-8"><title>%s</title><style>%s</style>'
+            '<h1 dir="auto">%s</h1><div>%s</div>%s%s' % (
+                html.escape(title), CSS, html.escape(title), ''.join(toc), ''.join(parts), COPY_JS))
+
+
+def _uniq(path):
+    base, ext = os.path.splitext(path)
+    p, i = path, 2
+    while os.path.exists(p):
+        p = '%s_%d%s' % (base, i, ext)
+        i += 1
+    return p
+
+
+def _entry_md(out, e):
+    return get_edit_text(out, e)
+
+
+def export_items(out, entries, dest, fmt_, combined=False, log=print):
+    """fmt_: 'md' | 'html' | 'pdf'. برمی‌گرداند: (فایل‌های ساخته‌شده, خطاها)."""
+    entries = [e for e in entries if e.get('kind') in ('chat', 'project')]
+    os.makedirs(dest, exist_ok=True)
+    made, errors = [], []
+    stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M')
+    if not entries:
+        return made, ['موردی برای خروجی نیست.']
+    if combined:
+        if fmt_ == 'md':
+            p = _uniq(os.path.join(dest, 'ChatExport_%s.md' % stamp))
+            with open(p, 'w', encoding='utf-8') as w:
+                for e in entries:
+                    w.write(_entry_md(out, e).rstrip() + '\n\n---\n\n')
+            made.append(p)
+        else:
+            page = combined_html(out, entries)
+            hp = _uniq(os.path.join(dest, 'ChatExport_%s.html' % stamp))
+            with open(hp, 'w', encoding='utf-8') as w:
+                w.write(page)
+            if fmt_ == 'html':
+                made.append(hp)
+            else:
+                try:
+                    made.append(html_to_pdf(hp, _uniq(os.path.join(dest, 'ChatExport_%s.pdf' % stamp))))
+                    os.remove(hp)
+                except Exception as ex:
+                    made.append(hp)
+                    errors.append(str(ex))
+        return made, errors
+    for e in entries:
+        try:
+            folder = os.path.join(dest, safe(e['category'])) if e.get('category') else dest
+            os.makedirs(folder, exist_ok=True)
+            page = os.path.join(out, e['rel'])
+            name = safe(e['title'])
+            if fmt_ == 'md':
+                if e['kind'] == 'chat':
+                    p = _uniq(os.path.join(folder, name + '.md'))
+                    shutil.copy2(page[:-5] + '.md', p)
+                else:
+                    p = _uniq(os.path.join(folder, name))
+                    shutil.copytree(os.path.dirname(page), p, ignore=shutil.ignore_patterns('index.html'))
+                made.append(p)
+            elif fmt_ == 'html':
+                if e['kind'] == 'chat':
+                    p = _uniq(os.path.join(folder, name + '.html'))
+                    shutil.copy2(page, p)
+                else:
+                    p = _uniq(os.path.join(folder, name))
+                    shutil.copytree(os.path.dirname(page), p)
+                made.append(p)
+            else:
+                made.append(html_to_pdf(page, _uniq(os.path.join(folder, name + '.pdf'))))
+        except RuntimeError as ex:
+            errors.append(str(ex))
+            if str(ex) == 'NO_BROWSER':
+                break
+        except Exception as ex:
+            errors.append('%s: %s' % (e['title'], ex))
+    return made, errors
+
+
+def preview_entry_html(e, text):
+    """صفحه‌ی HTML پیش‌نمایش برای متن در حال ویرایش (بدون ذخیره)."""
+    text = BIDI_CTRL.sub('', str(text))
+    if e['kind'] == 'chat':
+        return chat_page_from_md(text, e['title'])[2]
+    first, _, rest = text.strip('\n').partition('\n')
+    if first.startswith('# '):
+        return preview_html(first[2:].strip() or e['title'], rest)
+    return preview_html(e['title'], text)
