@@ -1,4 +1,4 @@
-"""ChatArchiver - آرشیو چت‌ها، پروژه‌ها و فایل‌ها.  Author: Majid Taherian"""
+"""ChatArchiver - آرشیو چت‌ها، پروژه‌ها و فایل‌ها.  Author: Majid Taheryan"""
 import datetime
 import json
 import math
@@ -77,7 +77,8 @@ HELP = """۱) ChatGPT: Settings ← Data controls ← Export data  (لینک د�
 ۳) در صفحه‌ی «ورود از Export» فایل ZIP را انتخاب و «شروع» را بزنید.
 ۴) چت یا پروژه‌ای که Export ندارد را از «ورود دستی» وارد کنید.
 ۵) در «آرشیو» می‌توانید همه‌چیز را جستجو و باز کنید.
-۶) «خروجی» یک فایل Markdown واحد می‌سازد؛ «پشتیبان‌گیری» یک ZIP کامل از آرشیو."""
+۶) «خروجی» یک فایل Markdown واحد می‌سازد؛ «پشتیبان‌گیری» یک ZIP کامل از آرشیو.
+۷) «کدها»: هر کدی که داخل یک چت بین ``` و ``` آمده باشد جدا ذخیره می‌شود تا بتوانید با یک کلیک کپی کنید."""
 
 
 def lerp(a, b, t):
@@ -144,15 +145,40 @@ def wrap_px(text, spec, px):
 
 
 class FLabel(tk.Label):
+    """برچسب فارسی: شکستن خط‌ها بر اساس عرض واقعی برچسب (با حاشیه‌ی اطمینان)،
+    تا هیچ خطی از کادر بیرون نزند و دنباله‌ی آن به ابتدای خط نپرد."""
+
     def __init__(self, master=None, cnf={}, **kw):
         self._wrap = kw.pop('wraplength', 0)
         self._fspec = kw.get('font')
+        self._raw = kw.get('text', '')
+        self._dyn = 0
         if 'text' in kw:
             kw['text'] = self._fmt(kw['text'])
         super().__init__(master, cnf, **kw)
+        if self._wrap:
+            self.bind('<Configure>', self._on_cfg, add='+')
+
+    def _px(self):
+        if not self._wrap:
+            return 0
+        w = self._wrap
+        if self._dyn:
+            w = min(w, self._dyn)
+        return max(60, int(w * 0.90))
 
     def _fmt(self, text):
-        return '\n'.join(fa(l) for l in wrap_px(text, self._fspec, self._wrap))
+        return '\n'.join(fa(l) for l in wrap_px(text, self._fspec, self._px()))
+
+    def _on_cfg(self, e):
+        try:
+            padx = int(float(str(self.cget('padx'))))
+        except Exception:
+            padx = 1
+        new = e.width - 2 * padx - 6
+        if new > 40 and abs(new - self._dyn) > 8:
+            self._dyn = new
+            tk.Label.configure(self, text=self._fmt(self._raw))
 
     def configure(self, cnf=None, **kw):
         if isinstance(cnf, dict):
@@ -162,6 +188,7 @@ class FLabel(tk.Label):
         if 'font' in kw:
             self._fspec = kw['font']
         if 'text' in kw:
+            self._raw = kw['text']
             kw['text'] = self._fmt(kw['text'])
         return super().configure(cnf, **kw)
 
@@ -360,7 +387,10 @@ class App(tk.Tk):
         elif key == 'archive':
             self.refresh_archive()
         elif key == 'code':
-            self.refresh_code()
+            if not self.settings.get('code_scanned'):
+                self.scan_code(quiet=True)
+            else:
+                self.refresh_code()
 
     def nav_hover(self, key, on):
         if key != self.cur:
@@ -790,12 +820,13 @@ class App(tk.Tk):
         bar = tk.Frame(p)
         bar.pack(fill='x', pady=(4, 6))
         self.make_btn(bar, 'بازخوانی', self.refresh_code, ghost=True).pack(side='left')
+        self.make_btn(bar, 'اسکن آرشیو برای کد', self.scan_code).pack(side='left', padx=6)
         tk.Entry(bar, textvariable=self.cq, justify='right').pack(side='right', fill='x', expand=True, padx=(0, 8), ipady=5)
         c = self.card(p)
         c.pack(fill='both', expand=True)
         self.code_title = self.card_title(c, 'کدها')
-        self.note(c, 'کدهای داخل چت‌ها و پروژه‌ها (بلوک‌های ```) جدا از متن چت ذخیره می‌شوند. '
-                     'یک کد را انتخاب کنید و «کپی کد» را بزنید.')
+        self.note(c, 'هر بخشی از چت که بین ``` و ``` باشد (کد برنامه) جدا از متن چت ذخیره می‌شود و اینجا فهرست می‌شود. '
+                     'یک کد را انتخاب کنید و «کپی کد» را بزنید. اگر چتی کد نداشته باشد، چیزی اینجا نمی‌آید.')
         body = tk.Frame(c)
         body.pack(fill='both', expand=True, padx=10, pady=(6, 4))
         left = tk.Frame(body)
@@ -827,6 +858,15 @@ class App(tk.Tk):
         self.make_btn(row, 'حذف', self.delete_code, ghost=True).pack(side='left')
         self.code_tree.bind('<<TreeviewSelect>>', lambda e: self.show_code())
         self.cq.trace_add('write', lambda *a: self.refresh_code())
+
+    def scan_code(self, quiet=False):
+        n = archiver.rebuild_code(self.out.get())
+        self.settings['code_scanned'] = True
+        self.save_settings()
+        if not quiet:
+            self.log('اسکن کد تمام شد: %d چت/پروژه‌ی تازه کد داشت.' % n)
+            self.toggle_log(True)
+        self.refresh_code()
 
     def refresh_code(self):
         q = self.cq.get().strip().lower()
@@ -1000,7 +1040,7 @@ class App(tk.Tk):
         self.card_title(a, 'درباره برنامه')
         self.note(a, 'ChatArchiver — آرشیو شخصی چت‌ها، پروژه‌ها و فایل‌ها (ChatGPT، Claude و ...) روی کامپیوتر شما.', wrap=760)
         self.note(a, 'نسخه: 1.0')
-        who = tk.Label(a, text='سازنده: Majid Taherian', anchor='e', font=('Tahoma', 11, 'bold'))
+        who = tk.Label(a, text='سازنده: Majid Taheryan', anchor='e', font=('Tahoma', 11, 'bold'))
         who.pack(fill='x', padx=14, pady=(4, 12))
 
     # ---------- تم ----------
