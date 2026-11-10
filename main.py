@@ -62,10 +62,11 @@ NAV = [('home', '⌂   خانه'), ('import', '⇩   ورود از Export'), ('m
        ('archive', '☰   آرشیو'), ('code', '‹›   کدها'), ('export', '⇪   خروجی'), ('backup', '⟳   پشتیبان‌گیری'),
        ('settings', '⚙   تنظیمات'), ('help', '?   راهنما و درباره')]
 
-TREE_HEADS = {'date': 'تاریخ', 'source': 'منبع', 'kind': 'نوع', 'title': 'عنوان'}
+TREE_HEADS = {'date': 'تاریخ', 'source': 'منبع', 'category': 'دسته', 'kind': 'نوع', 'title': 'عنوان', 'star': '★'}
 KIND_FA = {'chat': 'چت', 'project': 'پروژه', 'file': 'فایل'}
 SORTS = {'جدیدترین': ('date', True), 'قدیمی‌ترین': ('date', False), 'عنوان (الف تا ی)': ('title', False),
-         'منبع': ('source', False), 'نوع': ('kind', False)}
+         'منبع': ('source', False), 'نوع': ('kind', False), 'ستاره‌دارها اول': ('star', True),
+         'دسته': ('category', False)}
 
 
 def human(n):
@@ -78,7 +79,8 @@ HELP = """۱) ChatGPT: Settings ← Data controls ← Export data  (لینک د�
 ۴) چت یا پروژه‌ای که Export ندارد را از «ورود دستی» وارد کنید.
 ۵) در «آرشیو» می‌توانید همه‌چیز را جستجو و باز کنید.
 ۶) «خروجی» یک فایل Markdown واحد می‌سازد؛ «پشتیبان‌گیری» یک ZIP کامل از آرشیو.
-۷) «کدها»: هر کدی که داخل یک چت بین ``` و ``` آمده باشد جدا ذخیره می‌شود تا بتوانید با یک کلیک کپی کنید."""
+۷) «کدها»: هر کدی که داخل یک چت بین ``` و ``` آمده باشد جدا ذخیره می‌شود تا بتوانید با یک کلیک کپی کنید.
+۸) در «آرشیو»: «ویرایش» متن چت/پروژه را عوض می‌کند، ★ علاقه‌مندی‌ها را نشان می‌کند، «دسته» چت‌های هم‌گروه را دسته‌بندی می‌کند و «خروجی» از موردهای انتخاب‌شده Markdown، HTML یا PDF می‌سازد."""
 
 
 def lerp(a, b, t):
@@ -437,9 +439,9 @@ class App(tk.Tk):
     def make_tree(self, parent, height, sortable=False):
         fr = tk.Frame(parent)
         fr.pack(fill='both', expand=True, padx=10, pady=(0, 10))
-        tree = ttk.Treeview(fr, columns=('date', 'source', 'kind', 'title'), show='headings', height=height,
-                            selectmode='extended' if sortable else 'browse')
-        for c, w in (('date', 100), ('source', 100), ('kind', 70), ('title', 360)):
+        tree = ttk.Treeview(fr, columns=('date', 'source', 'category', 'kind', 'title', 'star'), show='headings',
+                            height=height, selectmode='extended' if sortable else 'browse')
+        for c, w in (('date', 92), ('source', 84), ('category', 90), ('kind', 62), ('title', 330), ('star', 34)):
             kw = {'command': (lambda cc=c: self.sort_by(cc))} if sortable else {}
             tree.heading(c, text=fa(TREE_HEADS[c]), anchor='e', **kw)
             tree.column(c, width=w, anchor='e', stretch=(c == 'title'))
@@ -456,7 +458,8 @@ class App(tk.Tk):
         self.tree_rows[tree] = rows
         for i, r in enumerate(rows):
             tree.insert('', 'end', iid=str(i),
-                        values=(r['date'], fa(r['source']), fa(KIND_FA.get(r['kind'], '')), fa(r['title'])))
+                        values=(r['date'], fa(r['source']), fa(r.get('category', '')), fa(KIND_FA.get(r['kind'], '')), fa(r['title']),
+                                '★' if r.get('star') else ''))
 
     def selected_rows(self, tree):
         rows = self.tree_rows.get(tree, [])
@@ -653,15 +656,23 @@ class App(tk.Tk):
     def build_archive(self, p):
         self.q = tk.StringVar()
         bar = tk.Frame(p)
-        bar.pack(fill='x', pady=(4, 6))
-        self.sort_box = ttk.Combobox(bar, values=list(SORTS), state='readonly', width=16, justify='center')
+        bar.pack(fill='x', pady=(4, 4))
+        bar2 = tk.Frame(p)
+        bar2.pack(fill='x', pady=(0, 6))
+        self.sort_box = ttk.Combobox(bar2, values=list(SORTS), state='readonly', width=15, justify='center')
         self.sort_box.set('جدیدترین')
         self.sort_box.pack(side='left')
-        tk.Label(bar, text='مرتب‌سازی:').pack(side='left', padx=(6, 4))
-        self.src_box = ttk.Combobox(bar, values=['همه'], state='readonly', width=14, justify='center')
+        tk.Label(bar2, text='مرتب‌سازی:').pack(side='left', padx=(6, 4))
+        self.src_box = ttk.Combobox(bar2, values=['همه'], state='readonly', width=11, justify='center')
         self.src_box.set('همه')
         self.src_box.pack(side='left', padx=(10, 4))
-        tk.Label(bar, text='منبع:').pack(side='left')
+        tk.Label(bar2, text='منبع:').pack(side='left')
+        self.cat_box = ttk.Combobox(bar2, values=['همه دسته‌ها'], state='readonly', width=13, justify='center')
+        self.cat_box.set('همه دسته‌ها')
+        self.cat_box.pack(side='left', padx=(10, 4))
+        tk.Label(bar2, text='دسته:').pack(side='left')
+        self.only_star = tk.BooleanVar(value=False)
+        tk.Checkbutton(bar, text='فقط ★', variable=self.only_star, command=self.refresh_archive).pack(side='left', padx=8)
         tk.Entry(bar, textvariable=self.q, justify='right').pack(side='right', fill='x', expand=True, padx=(0, 8), ipady=5)
         c = self.card(p)
         c.pack(fill='both', expand=True)
@@ -669,11 +680,11 @@ class App(tk.Tk):
         self.arch_tree = self.make_tree(c, 8, sortable=True)
         act = tk.Frame(c)
         act.pack(fill='x', padx=14, pady=(0, 6))
-        self.make_btn(act, 'باز کردن', lambda: self.open_selected(self.arch_tree)).pack(side='right')
-        self.make_btn(act, 'تغییر نام', self.rename_item, ghost=True).pack(side='right', padx=6)
-        self.make_btn(act, 'حذف', self.delete_items, ghost=True).pack(side='right')
-        tk.Label(act, text='(حذف = انتقال به سطل آرشیو؛ قابل بازگشت)').pack(side='left')
-        act.winfo_children()[-1].role = 'muted'
+        self.make_btn(act, 'ویرایش', self.edit_item).pack(side='right')
+        for txt, cmd in (('باز کردن', lambda: self.open_selected(self.arch_tree)), ('تغییر نام', self.rename_item),
+                         ('★ ستاره', self.toggle_star), ('دسته', self.assign_category), ('خروجی', self.export_selected),
+                         ('حذف', self.delete_items)):
+            self.make_btn(act, txt, cmd, ghost=True).pack(side='right', padx=3)
         t2 = tk.Label(c, text='فایل‌ها و کدهای مورد انتخاب‌شده', anchor='e', font=('Tahoma', 10, 'bold'))
         t2.pack(fill='x', padx=14)
         fr = tk.Frame(c)
@@ -691,6 +702,7 @@ class App(tk.Tk):
         self.arch_tree.bind('<<TreeviewSelect>>', lambda e: self.refresh_item_files())
         self.sort_box.bind('<<ComboboxSelected>>', self.on_sort_box)
         self.src_box.bind('<<ComboboxSelected>>', lambda e: self.refresh_archive())
+        self.cat_box.bind('<<ComboboxSelected>>', lambda e: self.refresh_archive())
         self.q.trace_add('write', lambda *a: self.refresh_archive())
 
     def on_sort_box(self, e=None):
@@ -712,11 +724,22 @@ class App(tk.Tk):
         self.src_box.config(values=sources)
         if self.src_box.get() not in sources:
             self.src_box.set('همه')
-        q, sf = self.q.get().strip().lower(), self.src_box.get()
+        cats = ['همه دسته‌ها', 'بدون دسته'] + archiver.categories(out)
+        self.cat_box.config(values=cats)
+        if self.cat_box.get() not in cats:
+            self.cat_box.set('همه دسته‌ها')
+        q, sf, cf = self.q.get().strip().lower(), self.src_box.get(), self.cat_box.get()
         rows = [r for r in rows if (sf == 'همه' or r['source'] == sf)
-                and (not q or q in (r['title'] + ' ' + r['source']).lower())]
+                and (not q or q in (r['title'] + ' ' + r['source'] + ' ' + r.get('category', '')).lower())]
+        if self.only_star.get():
+            rows = [r for r in rows if r.get('star')]
+        if cf == 'بدون دسته':
+            rows = [r for r in rows if r['kind'] != 'file' and not r.get('category')]
+        elif cf != 'همه دسته‌ها':
+            rows = [r for r in rows if r.get('category') == cf]
         col = self.sort_col
-        rows.sort(key=lambda r: str(r[col]).casefold(), reverse=self.sort_rev)
+        key = (lambda r: 1 if r.get('star') else 0) if col == 'star' else (lambda r: str(r.get(col, '')).casefold())
+        rows.sort(key=key, reverse=self.sort_rev)
         self.fill_tree(self.arch_tree, rows)
         for c, txt in TREE_HEADS.items():
             self.arch_tree.heading(c, text=fa(txt + ((' ▼' if self.sort_rev else ' ▲') if c == col else '')))
@@ -793,6 +816,212 @@ class App(tk.Tk):
                 self.log('خطا در حذف %s: %s' % (r['title'], ex))
         self.log('%d مورد به سطل منتقل شد.' % len(rows))
         self.refresh_all()
+
+    def selected_items(self):
+        return [r for r in self.selected_rows(self.arch_tree) if r['kind'] != 'file']
+
+    def toggle_star(self):
+        rows = self.selected_items()
+        if not rows:
+            messagebox.showinfo('توجه', 'اول یک یا چند چت/پروژه را انتخاب کنید (فایل‌ها ستاره نمی‌گیرند).')
+            return
+        value = not all(r.get('star') for r in rows)
+        archiver.set_star(self.out.get(), rows, value)
+        self.log(('★ ستاره‌دار شد: %d مورد' if value else 'ستاره برداشته شد: %d مورد') % len(rows))
+        self.refresh_all()
+
+    def assign_category(self):
+        rows = self.selected_items()
+        if not rows:
+            messagebox.showinfo('توجه', 'اول یک یا چند چت/پروژه را انتخاب کنید.')
+            return
+        val = self.ask_category(archiver.categories(self.out.get()), rows[0].get('category', ''))
+        if val is None:
+            return
+        archiver.set_category(self.out.get(), rows, val)
+        self.log('دسته‌ی %d مورد: %s' % (len(rows), val or 'بدون دسته'))
+        self.refresh_all()
+
+    def ask_category(self, cats, current=''):
+        d = tk.Toplevel(self)
+        d.title(fa('دسته‌بندی'))
+        d.transient(self)
+        d.resizable(False, False)
+        t = self.colors()
+        d.configure(bg=t['bg'])
+        tk.Label(d, text='نام دسته را انتخاب کنید یا یک نام تازه بنویسید:', anchor='e').pack(fill='x', padx=16, pady=(14, 4))
+        cb = ttk.Combobox(d, values=cats, width=44, justify='right')
+        cb.set(current)
+        cb.pack(padx=16, pady=4, ipady=3)
+        res = {'v': None}
+
+        def done(v):
+            res['v'] = v
+            d.destroy()
+
+        row = tk.Frame(d)
+        row.pack(fill='x', padx=16, pady=(8, 14))
+        self.make_btn(row, 'تأیید', lambda: done(cb.get().strip())).pack(side='right')
+        self.make_btn(row, 'بدون دسته', lambda: done(''), ghost=True).pack(side='right', padx=6)
+        self.make_btn(row, 'انصراف', d.destroy, ghost=True).pack(side='right')
+        cb.bind('<Return>', lambda e: done(cb.get().strip()))
+        d.bind('<Escape>', lambda e: d.destroy())
+        self.walk(d, t)
+        d.update_idletasks()
+        d.geometry('+%d+%d' % (self.winfo_rootx() + 220, self.winfo_rooty() + 180))
+        d.grab_set()
+        cb.focus_set()
+        self.wait_window(d)
+        return res['v']
+
+    def edit_item(self):
+        rows = self.selected_rows(self.arch_tree)
+        if len(rows) != 1:
+            messagebox.showinfo('توجه', 'برای ویرایش، فقط یک مورد را انتخاب کنید.')
+            return
+        if rows[0]['kind'] == 'file':
+            self.open_item(rows[0])
+            return
+        self.open_editor(rows[0])
+
+    def open_editor(self, e):
+        try:
+            text = archiver.get_edit_text(self.out.get(), e)
+        except Exception as ex:
+            messagebox.showwarning('توجه', 'متن این مورد پیدا نشد: %s' % ex)
+            return None
+        t = self.colors()
+        win = tk.Toplevel(self)
+        win.title(fa('ویرایش: ' + e['title']))
+        win.geometry('880x660')
+        win.configure(bg=t['bg'])
+        hint = tk.Label(win, anchor='e', justify='right', wraplength=840,
+                        text='متن را ویرایش کنید و «ذخیره» را بزنید. در چت‌ها هر پیام با خطی مثل «## من  2026-01-01 10:00» '
+                             'شروع می‌شود؛ این خط‌ها را نگه دارید. خط اول (# عنوان) نام مورد است.')
+        hint.role = 'muted'
+        hint.pack(fill='x', padx=14, pady=(10, 4))
+        fr = tk.Frame(win)
+        fr.pack(fill='both', expand=True, padx=14, pady=4)
+        box = tk.Text(fr, wrap='word', undo=True, bd=0, relief='flat', font=('Tahoma', 11))
+        sb = ttk.Scrollbar(fr, orient='vertical', command=box.yview)
+        box.configure(yscrollcommand=sb.set)
+        sb.pack(side='left', fill='y')
+        box.pack(side='right', fill='both', expand=True)
+        box.tag_configure('rtl', justify='right')
+        box.insert('1.0', text)
+        box.bind('<KeyRelease>', lambda ev: self.refresh_rtl(box))
+        box.bind('<<Paste>>', lambda ev: self.after(80, lambda: self.refresh_rtl(box)), add='+')
+
+        def current():
+            return BIDI_CTRL.sub('', box.get('1.0', 'end-1c'))
+
+        def save(*_):
+            try:
+                archiver.update_entry_text(self.out.get(), e, current())
+            except Exception as ex:
+                messagebox.showwarning('توجه', str(ex))
+                return
+            self.log('ویرایش ذخیره شد: ' + e['title'])
+            win.destroy()
+            self.refresh_all()
+
+        def preview(*_):
+            import tempfile as _tf
+            fd, path = _tf.mkstemp(suffix='.html')
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                f.write(archiver.preview_entry_html(e, current()))
+            self.open_path(path)
+
+        row = tk.Frame(win)
+        row.pack(fill='x', padx=14, pady=(4, 12))
+        self.make_btn(row, 'ذخیره', save, big=True).pack(side='right')
+        self.make_btn(row, 'پیش‌نمایش در مرورگر', preview, ghost=True).pack(side='right', padx=8)
+        self.make_btn(row, 'انصراف', win.destroy, ghost=True).pack(side='right')
+        win.bind('<Control-s>', save)
+        win.bind('<Control-KeyPress>', lambda ev: (save(), 'break')[1] if ev.keycode == 83 else None)
+        self.walk(win, t)
+        self.refresh_rtl(box)
+        win.text_widget, win.do_save = box, save
+        return win
+
+    def ask_export(self, n_sel, n_all):
+        d = tk.Toplevel(self)
+        d.title(fa('خروجی گرفتن'))
+        d.transient(self)
+        d.resizable(False, False)
+        t = self.colors()
+        d.configure(bg=t['bg'])
+        scope = tk.StringVar(value='sel' if n_sel else 'all')
+        fmt_ = tk.StringVar(value='pdf')
+        mode = tk.StringVar(value='sep')
+        res = {'v': None}
+
+        def group(title, var, items):
+            tk.Label(d, text=title, anchor='e', font=('Tahoma', 10, 'bold')).pack(fill='x', padx=18, pady=(12, 2))
+            for val, txt, enabled in items:
+                rb = tk.Radiobutton(d, text=txt, variable=var, value=val, anchor='e')
+                rb.pack(fill='x', padx=26)
+                if not enabled:
+                    rb.config(state='disabled')
+
+        group('کدام موردها؟', scope, (('sel', 'فقط %d موردِ انتخاب‌شده' % n_sel, n_sel > 0),
+                                      ('all', 'همه‌ی %d موردِ فهرست فعلی (با فیلترها)' % n_all, True)))
+        group('قالب خروجی', fmt_, (('md', 'Markdown (.md)', True), ('html', 'HTML (.html)', True),
+                                   ('pdf', 'PDF (.pdf) — به Microsoft Edge یا Google Chrome نیاز دارد', True)))
+        group('شکل خروجی', mode, (('sep', 'هر مورد یک فایل جدا (دسته‌ها پوشه‌ی جدا می‌شوند)', True),
+                                  ('one', 'همه در یک فایل', True)))
+
+        def ok():
+            res['v'] = dict(scope=scope.get(), fmt=fmt_.get(), combined=(mode.get() == 'one'))
+            d.destroy()
+
+        row = tk.Frame(d)
+        row.pack(fill='x', padx=18, pady=(14, 14))
+        self.make_btn(row, 'ادامه و انتخاب پوشه', ok).pack(side='right')
+        self.make_btn(row, 'انصراف', d.destroy, ghost=True).pack(side='right', padx=8)
+        self.walk(d, t)
+        d.update_idletasks()
+        d.geometry('+%d+%d' % (self.winfo_rootx() + 200, self.winfo_rooty() + 120))
+        d.grab_set()
+        self.wait_window(d)
+        return res['v']
+
+    def export_selected(self):
+        sel = self.selected_items()
+        allr = [r for r in self.tree_rows[self.arch_tree] if r['kind'] != 'file']
+        if not allr:
+            messagebox.showinfo('توجه', 'موردی برای خروجی گرفتن نیست.')
+            return
+        opts = self.ask_export(len(sel), len(allr))
+        if not opts:
+            return
+        entries = sel if opts['scope'] == 'sel' else allr
+        dest = filedialog.askdirectory(title=fa('پوشه‌ی مقصد خروجی'))
+        if not dest:
+            return
+        out, fmt_, combined = self.out.get(), opts['fmt'], opts['combined']
+        self.busy = True
+        self.toggle_log(True)
+        self.log('در حال ساخت خروجی (%d مورد، %s) ...' % (len(entries), fmt_.upper()))
+
+        def work():
+            made, errs = archiver.export_items(out, entries, dest, fmt_, combined, self.log)
+            self.after(0, lambda: self.export_done(made, errs, dest, fmt_))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def export_done(self, made, errs, dest, fmt_):
+        self.busy = False
+        self.log('خروجی تمام شد: %d فایل/پوشه در %s' % (len(made), dest))
+        for er in errs:
+            self.log('هشدار: ' + er)
+        if any('NO_BROWSER' in er for er in errs):
+            messagebox.showwarning('PDF', 'برای ساخت PDF به مرورگر Microsoft Edge یا Google Chrome نیاز است ولی پیدا نشد.\n'
+                                          'خروجی HTML بگیرید، آن را در مرورگر باز کنید و Print ← Save as PDF بزنید.')
+        elif errs:
+            messagebox.showwarning('توجه', 'بعضی موردها ساخته نشدند. جزئیات در «گزارش عملیات» است.')
+        if made:
+            self.open_dir(dest)
 
     def sel_item_file(self):
         sel = self.ftree.selection()
@@ -933,8 +1162,8 @@ class App(tk.Tk):
         c = self.card(p)
         c.pack(fill='x', pady=6)
         self.card_title(c, 'خروجی: یک فایل واحد')
-        self.note(c, 'همه‌ی چت‌ها و پروژه‌های آرشیو را در یک فایل Markdown پشت سر هم جمع می‌کند؛ '
-                     'مناسب برای خواندن پیوسته، جستجو یا دادن به یک ابزار دیگر.')
+        self.note(c, 'همه‌ی چت‌ها و پروژه‌های آرشیو را در یک فایل Markdown پشت سر هم جمع می‌کند. '
+                     'برای خروجی Markdown، HTML یا PDF از موردهای دلخواه، به صفحه‌ی «آرشیو» بروید و دکمه‌ی «خروجی» را بزنید.')
         self.make_btn(c, 'ساخت فایل Markdown واحد', self.do_export, big=True).pack(pady=14)
 
     def do_export(self):
@@ -1220,8 +1449,8 @@ class App(tk.Tk):
 
         self.bind_all('<Button-3>', show)
 
-    def refresh_rtl(self):
-        t = self.text
+    def refresh_rtl(self, t=None):
+        t = t or self.text
         t.tag_remove('rtl', '1.0', 'end')
         n = int(t.index('end-1c').split('.')[0])
         if n > 5000:
